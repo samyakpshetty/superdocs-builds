@@ -2,10 +2,10 @@
 #   db  — Postgres, the durable substrate (LangGraph checkpointer + round/outbox store)
 #   app — the integration; source bind-mounted for a fast dev loop
 #
-# The keyless test suite does NOT need db (it uses the SQLite store + in-memory
-# checkpointer), so `make test` runs app with --no-deps. The one-command demo
-# (`make demo`) brings up db to prove the real Postgres substrate while still using
-# the deterministic FAKE SuperDocs/Notion providers — no API keys, no ops spent.
+# The keyless test suite and `make demo` do NOT need db — they use the SQLite store and the
+# deterministic FAKE providers (no API keys, no ops), so both run with --no-deps. The Postgres
+# backend is a real, separately proven substrate: `make test-postgres` runs the store's suite
+# against this db service.
 
 services:
   db:

@@ -32,8 +32,8 @@ test-postgres: build ## Run the Postgres-backed store test against the real db s
 check: build ## The full CI gate: lint + typecheck + tests
 	$(RUN) sh -c "ruff check . && ruff format --check . && mypy src && pytest"
 
-demo: build ## Full fake round-trip over the real Postgres substrate (no keys, no ops)
-	$(COMPOSE) run --rm app python -m notion_review.cli demo
+demo: build ## Full round-trip on the fake providers — no keys, no ops, no Postgres
+	$(RUN) python -m notion_review.cli demo
 
 demo-live: build ## Real Notion + SuperDocs round-trip (needs SUPERDOCS_API_KEY + NOTION_TOKEN)
 	PROVIDER=live $(COMPOSE) run --rm app python -m notion_review.cli demo --live

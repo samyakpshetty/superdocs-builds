@@ -42,7 +42,7 @@ def _norm(text: str) -> str:
     return " ".join(text.split()).strip()
 
 
-def _plain_text_from_html(html: str) -> str:
+def plain_text_from_html(html: str) -> str:
     if not html.strip():
         return ""
     element: HtmlElement = lxml_html.fromstring(f"<div>{html}</div>")
@@ -240,7 +240,7 @@ def _apply_one(round_: ReviewRound, proposal: ProposedChange, notion: NotionClie
         return  # idempotent: already written on an earlier (interrupted) run
     try:
         if proposal.source == ChangeSource.TRACKED_CHANGE:
-            new_text = _plain_text_from_html(proposal.new_html)
+            new_text = plain_text_from_html(proposal.new_html)
             notion.update_block(
                 proposal.notion_block_id,
                 block_type=proposal.block_type,
