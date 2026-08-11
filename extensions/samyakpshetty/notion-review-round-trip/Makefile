@@ -26,6 +26,9 @@ typecheck: build ## mypy (strict, a real gate)
 test: build ## Run the keyless test suite
 	$(RUN) pytest
 
+test-postgres: build ## Run the Postgres-backed store test against the real db service
+	RUN_POSTGRES_TESTS=1 $(COMPOSE) run --rm -e RUN_POSTGRES_TESTS=1 app pytest -m postgres
+
 check: build ## The full CI gate: lint + typecheck + tests
 	$(RUN) sh -c "ruff check . && ruff format --check . && mypy src && pytest"
 

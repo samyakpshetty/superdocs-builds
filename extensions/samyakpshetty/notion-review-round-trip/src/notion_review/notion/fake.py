@@ -1,0 +1,153 @@
+"""An in-memory Notion stand-in: a real block tree with pagination, updates, and comments.
+
+It stores blocks flat with a parent→children index (as Notion does internally) and paginates
+``list_block_children`` for real, so the tree-fetch and write-back logic are exercised against
+Notion's actual shape without a token. ``build_sample`` produces a page with the structures the
+assigned build must preserve: a heading, a paragraph, a toggle with a nested child, a callout,
+and a table with rows.
+"""
+
+from __future__ import annotations
+
+from notion_review.notion.base import NotionNotFoundError
+from notion_review.notion.models import (
+    Block,
+    ChildrenPage,
+    Comment,
+    Page,
+    RichText,
+    plain_text,
+)
+
+
+class FakeNotionClient:
+    """In-memory implementation of :class:`~notion_review.notion.base.NotionClient`."""
+
+    def __init__(self) -> None:
+        self._pages: dict[str, Page] = {}
+        self._blocks: dict[str, Block] = {}  # stored without children resolved
+        self._children: dict[str, list[str]] = {}  # parent id -> ordered child ids
+        self._comments: list[Comment] = []
+        self._counter = 0
+
+    # -- construction helpers (tests / demo build the tree with these) ---------
+    def _next(self, prefix: str) -> str:
+        self._counter += 1
+        return f"{prefix}_{self._counter:04d}"
+
+    def new_page(self, title: str) -> str:
+        page_id = self._next("page")
+        self._pages[page_id] = Page(id=page_id, title=title, url=f"https://notion.so/{page_id}")
+        self._children[page_id] = []
+        return page_id
+
+    def add(
+        self,
+        parent_id: str,
+        block_type: str,
+        text: str = "",
+        *,
+        meta: dict[str, object] | None = None,
+    ) -> str:
+        """Append a block under ``parent_id``; returns its id (use it as a parent to nest)."""
+        block_id = self._next("block")
+        self._blocks[block_id] = Block(
+            id=block_id,
+            type=block_type,
+            rich_text=plain_text(text) if text else [],
+            meta=meta or {},
+        )
+        self._children.setdefault(parent_id, []).append(block_id)
+        self._children.setdefault(block_id, [])
+        return block_id
+
+    # -- the client contract ---------------------------------------------------
+    def retrieve_page(self, page_id: str) -> Page:
+        try:
+            return self._pages[page_id]
+        except KeyError:
+            raise NotionNotFoundError(f"page not found: {page_id}") from None
+
+    def list_block_children(
+        self, block_id: str, *, start_cursor: str | None = None, page_size: int = 100
+    ) -> ChildrenPage:
+        child_ids = self._children.get(block_id, [])
+        start = int(start_cursor) if start_cursor else 0
+        window = child_ids[start : start + page_size]
+        results = [self._snapshot(cid) for cid in window]
+        end = start + page_size
+        has_more = end < len(child_ids)
+        return ChildrenPage(
+            results=results,
+            next_cursor=str(end) if has_more else None,
+            has_more=has_more,
+        )
+
+    def update_block(self, block_id: str, *, block_type: str, rich_text: list[RichText]) -> Block:
+        block = self._blocks.get(block_id)
+        if block is None:
+            raise NotionNotFoundError(f"block not found: {block_id}")
+        block.rich_text = list(rich_text)
+        return self._snapshot(block_id)
+
+    def create_comment(
+        self,
+        *,
+        rich_text: list[RichText],
+        page_id: str | None = None,
+        block_id: str | None = None,
+    ) -> Comment:
+        parent = block_id or page_id
+        if parent is None:
+            raise NotionNotFoundError("create_comment requires page_id or block_id")
+        comment = Comment(
+            id=self._next("comment"),
+            parent_id=parent,
+            rich_text=list(rich_text),
+            author="SuperDocs Review Bridge",
+            created_time="2026-01-01T00:00:00Z",
+        )
+        self._comments.append(comment)
+        return comment
+
+    # -- introspection for tests -----------------------------------------------
+    def _snapshot(self, block_id: str) -> Block:
+        """Return a copy of a stored block with ``has_children`` set, children left unresolved."""
+        block = self._blocks[block_id]
+        return block.model_copy(
+            update={"has_children": bool(self._children.get(block_id)), "children": []}
+        )
+
+    def block_text(self, block_id: str) -> str:
+        return self._blocks[block_id].plain()
+
+    def comments_for(self, parent_id: str) -> list[Comment]:
+        return [c for c in self._comments if c.parent_id == parent_id]
+
+    @classmethod
+    def build_sample(cls) -> tuple[FakeNotionClient, str]:
+        """A page exercising the structures the build must preserve across the round-trip."""
+        client = cls()
+        page_id = client.new_page("Product Spec: Project Aurora")
+        client.add(page_id, "heading_1", "Overview")
+        client.add(
+            page_id,
+            "paragraph",
+            "Aurora ships in Q3 and targets mid-market teams migrating off spreadsheets.",
+        )
+        toggle_id = client.add(page_id, "toggle", "Implementation details")
+        client.add(
+            toggle_id,
+            "paragraph",
+            "The ingestion service runs on a single Postgres instance behind a queue.",
+        )
+        client.add(
+            page_id,
+            "callout",
+            "Pricing in this draft is a placeholder and must be confirmed before release.",
+            meta={"icon": "💡", "color": "blue_background"},
+        )
+        table_id = client.add(page_id, "table", meta={"table_width": 2, "has_column_header": True})
+        client.add(table_id, "table_row", meta={"cells": [["Plan"], ["Price"]]})
+        client.add(table_id, "table_row", meta={"cells": [["Pro"], ["$99/mo"]]})
+        return client, page_id
