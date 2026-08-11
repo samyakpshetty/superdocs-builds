@@ -1,0 +1,43 @@
+# Two services:
+#   db  — Postgres, the durable substrate (LangGraph checkpointer + round/outbox store)
+#   app — the integration; source bind-mounted for a fast dev loop
+#
+# The keyless test suite does NOT need db (it uses the SQLite store + in-memory
+# checkpointer), so `make test` runs app with --no-deps. The one-command demo
+# (`make demo`) brings up db to prove the real Postgres substrate while still using
+# the deterministic FAKE SuperDocs/Notion providers — no API keys, no ops spent.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: review
+      POSTGRES_PASSWORD: review
+      POSTGRES_DB: review
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U review -d review"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data  # ephemeral: a clean DB every run, nothing to wipe
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://review:review@db:5432/review
+      # Providers default to the deterministic fakes; real keys only for `make demo-live`.
+      PROVIDER: ${PROVIDER:-fake}
+      SUPERDOCS_API_KEY: ${SUPERDOCS_API_KEY:-}
+      NOTION_TOKEN: ${NOTION_TOKEN:-}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+    working_dir: /app
+    command: ["python", "-c", "import notion_review; print('notion_review', notion_review.__version__)"]
