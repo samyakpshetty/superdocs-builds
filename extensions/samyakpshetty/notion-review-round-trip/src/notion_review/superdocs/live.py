@@ -151,6 +151,11 @@ class LiveSuperDocsClient:
             filename=f"{session_id}.{fmt}",
         )
 
+    def whoami(self) -> dict[str, Any]:
+        """The account behind this API key — the documented agent self-check."""
+        result = self._request("GET", "/v1/agents/whoami").json()
+        return dict(result)
+
     def close(self) -> None:
         self._client.close()
 
