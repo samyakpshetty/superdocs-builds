@@ -25,6 +25,10 @@ class NotionNotFoundError(NotionError):
 class NotionClient(Protocol):
     def retrieve_page(self, page_id: str) -> Page: ...
 
+    def retrieve_block(self, block_id: str) -> Block:
+        """Fetch a single block — used to verify a write-back actually landed."""
+        ...
+
     def list_block_children(
         self, block_id: str, *, start_cursor: str | None = None, page_size: int = 100
     ) -> ChildrenPage:

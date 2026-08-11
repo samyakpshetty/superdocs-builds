@@ -38,7 +38,7 @@ def reconcile_chunks(returned_html: str, block_map: list[BlockMapEntry]) -> int:
     Matches on our ``data-nr-id`` marker, which the service preserves alongside the
     ``data-chunk-id`` it adds. Returns the number of entries matched.
     """
-    root = lxml_html.fromstring(f"<body>{returned_html}</body>")
+    root = lxml_html.fromstring(f"<div>{returned_html}</div>")
     chunk_by_block: dict[str, str] = {}
     for el in root.iter():
         block_id = el.get("data-nr-id")

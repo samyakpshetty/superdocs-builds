@@ -21,7 +21,7 @@ _PARAGRAPH_TAGS = frozenset({"p", "blockquote", "summary", "li", "pre"})
 
 def html_to_docx(html: str) -> bytes:
     """Convert document HTML into Word .docx bytes."""
-    root = lxml_html.fromstring(f"<body>{html}</body>")
+    root = lxml_html.fromstring(f"<div>{html}</div>")
     doc = Document()
 
     for el in root.iter():

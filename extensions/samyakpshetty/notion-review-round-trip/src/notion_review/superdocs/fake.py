@@ -109,7 +109,7 @@ class FakeSuperDocsClient:
 
     # -- contract --------------------------------------------------------------
     def upload_document(self, *, document_html: str, session_id: str) -> UploadResult:
-        root = lxml_html.fromstring(f"<body>{document_html}</body>")
+        root = lxml_html.fromstring(f"<div>{document_html}</div>")
         session = _Session(root=root)
         count = 0
         for el in iter_block_elements(root):

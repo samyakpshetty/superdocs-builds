@@ -68,6 +68,11 @@ class FakeNotionClient:
         except KeyError:
             raise NotionNotFoundError(f"page not found: {page_id}") from None
 
+    def retrieve_block(self, block_id: str) -> Block:
+        if block_id not in self._blocks:
+            raise NotionNotFoundError(f"block not found: {block_id}")
+        return self._snapshot(block_id)
+
     def list_block_children(
         self, block_id: str, *, start_cursor: str | None = None, page_size: int = 100
     ) -> ChildrenPage:

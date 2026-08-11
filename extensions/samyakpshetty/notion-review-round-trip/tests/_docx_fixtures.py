@@ -99,6 +99,17 @@ def reviewed_docx() -> bytes:
     return build_docx(_document_xml(), _comments_xml())
 
 
+def unchanged_docx(text: str) -> bytes:
+    """A .docx with a single, unmodified paragraph — no tracked changes, no comments."""
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+        f"</w:body></w:document>"
+    )
+    return build_docx(document)
+
+
 def zip_with_too_many_members() -> bytes:
     """A zip that trips the member-count guard."""
     buffer = BytesIO()

@@ -80,6 +80,7 @@ class ProposedChange(BaseModel):
     id: str = Field(default_factory=lambda: _new_id("chg"))
     chunk_id: str
     notion_block_id: str
+    block_type: str = "paragraph"
     operation: ChangeOperation
     old_html: str = ""
     new_html: str = ""
