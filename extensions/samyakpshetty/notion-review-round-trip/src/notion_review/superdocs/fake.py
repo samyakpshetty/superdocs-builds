@@ -190,12 +190,16 @@ class FakeSuperDocsClient:
             usage=self._usage(record.ops_charged),
         )
 
-    def approve(self, *, session_id: str, decisions: list[ApprovalDecision]) -> ApproveResult:
+    def approve(
+        self, *, session_id: str, decisions: list[ApprovalDecision], job_id: str = ""
+    ) -> ApproveResult:
         session = self._sessions.get(session_id)
         applied = denied = 0
         by_chunk = {d.chunk_id: d for d in decisions}
         for record in self._jobs.values():
             if record.session_id != session_id or record.status != JobStatus.AWAITING_APPROVAL:
+                continue
+            if job_id and record.job_id != job_id:
                 continue
             for diff in parse_pending_changes(record.metadata):
                 decision = by_chunk.get(diff.chunk_id)

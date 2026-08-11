@@ -8,8 +8,10 @@ the reviewer → record the durable review round and link it on the Notion page.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from lxml import html as lxml_html
+from lxml.html import HtmlElement
 
 from notion_review.domain import BlockMapEntry, ReviewRound, RoundStatus
 from notion_review.logging import get_logger
@@ -35,23 +37,43 @@ class ReviewPacket:
 def reconcile_chunks(returned_html: str, block_map: list[BlockMapEntry]) -> int:
     """Fill each block-map entry's ``chunk_id`` from SuperDocs' returned HTML.
 
-    Matches on our ``data-nr-id`` marker, which the service preserves alongside the
-    ``data-chunk-id`` it adds. Returns the number of entries matched.
+    This is best-effort provenance, not a correctness requirement: an edit is proposed by
+    content, and SuperDocs returns the chunk id we approve with. We match first on our
+    ``data-nr-id`` marker (the fake preserves it) and then, because the live service strips
+    unknown attributes and re-chunks its own way, fall back to matching by block text.
+    Returns the number of entries matched.
     """
     root = lxml_html.fromstring(f"<div>{returned_html}</div>")
-    chunk_by_block: dict[str, str] = {}
+    chunks: list[tuple[str, str | None, str]] = []  # (chunk_id, marker, normalized_text)
     for el in root.iter():
-        block_id = el.get("data-nr-id")
         chunk_id = el.get("data-chunk-id")
-        if block_id and chunk_id:
-            chunk_by_block[block_id] = chunk_id
+        if chunk_id:
+            text = " ".join(str(cast(HtmlElement, el).text_content()).split())
+            chunks.append((chunk_id, el.get("data-nr-id"), text))
 
+    by_marker = {marker: cid for cid, marker, _ in chunks if marker}
+    used: set[str] = set()
     matched = 0
-    for entry in block_map:
-        chunk_id = chunk_by_block.get(entry.notion_block_id)
+
+    for entry in block_map:  # 1. exact marker match
+        chunk_id = by_marker.get(entry.notion_block_id)
         if chunk_id:
             entry.chunk_id = chunk_id
+            used.add(chunk_id)
             matched += 1
+
+    for entry in block_map:  # 2. text match for the rest (marker-stripping / re-chunking)
+        if entry.chunk_id:
+            continue
+        target = " ".join(entry.original_text.split())
+        if not target:
+            continue
+        for chunk_id, _, text in chunks:
+            if chunk_id not in used and (target == text or target in text):
+                entry.chunk_id = chunk_id
+                used.add(chunk_id)
+                matched += 1
+                break
     return matched
 
 

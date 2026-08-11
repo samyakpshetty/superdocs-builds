@@ -16,6 +16,10 @@ from notion_review.superdocs.models import (
 )
 
 
+class SuperDocsError(Exception):
+    """A SuperDocs API call failed."""
+
+
 def parse_pending_changes(metadata: Mapping[str, Any]) -> list[ChunkDiff]:
     """Extract proposed changes from async job metadata.
 
@@ -59,6 +63,8 @@ class SuperDocsClient(Protocol):
 
     def get_job(self, job_id: str) -> Job: ...
 
-    def approve(self, *, session_id: str, decisions: list[ApprovalDecision]) -> ApproveResult: ...
+    def approve(
+        self, *, session_id: str, decisions: list[ApprovalDecision], job_id: str = ""
+    ) -> ApproveResult: ...
 
     def export(self, *, session_id: str, fmt: str = "docx") -> ExportResult: ...

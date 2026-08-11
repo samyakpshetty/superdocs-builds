@@ -27,7 +27,7 @@ from notion_review.domain import (
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
 from notion_review.notion.models import plain_text
-from notion_review.superdocs.base import SuperDocsClient
+from notion_review.superdocs.base import SuperDocsClient, SuperDocsError
 from notion_review.superdocs.instructions import build_instruction
 from notion_review.superdocs.models import ApprovalDecision, Job, JobStatus
 
@@ -121,7 +121,9 @@ def propose_changes(
             _log.warning("ops_budget_exhausted", extra={"round_id": round_.id})
             break
 
-        if edit.is_text_change and edit.chunk_id:
+        if edit.is_text_change:
+            # SuperDocs locates the chunk by content and returns its own chunk id, so a
+            # pre-mapped chunk id is not required — the returned diff carries the id we approve.
             proposal = _propose_text_change(round_, superdocs, edit, config)
             if round_.status == RoundStatus.PARKED:  # circuit-breaker tripped mid-propose
                 break
@@ -164,6 +166,7 @@ def _propose_text_change(
         chunk_id=diff.chunk_id or edit.chunk_id or "",
         notion_block_id=edit.notion_block_id,
         block_type=edit.block_type,
+        job_id=job_id,
         operation=ChangeOperation.REPLACE,
         old_html=diff.old_html,
         new_html=diff.new_html,
@@ -206,8 +209,9 @@ def apply_decisions(
     """Record the human's item-by-item decisions and write approved changes back to Notion."""
     decision_by_id = {str(d["proposal_id"]): d for d in decisions}
 
-    # 1. Record decisions, and tell SuperDocs about the ones it proposed.
-    sd_decisions: list[ApprovalDecision] = []
+    # 1. Record decisions, and tell SuperDocs about the ones it proposed, grouped by the
+    #    chat job that produced them (the approve call is scoped to a job id).
+    by_job: dict[str, list[ApprovalDecision]] = {}
     for proposal in round_.proposals:
         decision = decision_by_id.get(proposal.id)
         if decision is None:
@@ -215,15 +219,24 @@ def apply_decisions(
         approved = bool(decision.get("approved"))
         proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
         if proposal.source == ChangeSource.TRACKED_CHANGE:
-            sd_decisions.append(
+            by_job.setdefault(proposal.job_id, []).append(
                 ApprovalDecision(
                     chunk_id=proposal.chunk_id,
                     approved=approved,
                     feedback=str(decision.get("feedback", "")),
                 )
             )
-    if sd_decisions:
-        superdocs.approve(session_id=round_.session_id, decisions=sd_decisions)
+    for job_id, job_decisions in by_job.items():
+        # SuperDocs' approve only syncs its own copy of the document; the authoritative apply
+        # is the write-back to Notion below. Degrade gracefully so a SuperDocs-side failure
+        # never blocks the host update — the reviewed change still lands where it must.
+        try:
+            superdocs.approve(session_id=round_.session_id, job_id=job_id, decisions=job_decisions)
+        except SuperDocsError as exc:
+            _log.warning(
+                "superdocs_approve_failed",
+                extra={"round_id": round_.id, "job_id": job_id, "error": str(exc)},
+            )
 
     # 2. Write each approved change back to Notion — idempotent, verified, attributed.
     round_.status = RoundStatus.APPLYING

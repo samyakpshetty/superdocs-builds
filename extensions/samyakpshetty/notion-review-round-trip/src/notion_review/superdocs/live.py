@@ -8,6 +8,7 @@ JSON-string double-decode is handled in exactly one place for both the fake and 
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import random
 import time
@@ -17,7 +18,7 @@ import httpx
 
 from notion_review.config import Config
 from notion_review.logging import get_logger
-from notion_review.superdocs.base import parse_pending_changes
+from notion_review.superdocs.base import SuperDocsError, parse_pending_changes
 from notion_review.superdocs.models import (
     ApprovalDecision,
     ApproveResult,
@@ -31,10 +32,6 @@ from notion_review.superdocs.models import (
 _log = get_logger("notion_review.superdocs.live")
 _RETRYABLE = frozenset({429, 500, 502, 503, 504})
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-
-class SuperDocsError(Exception):
-    """A SuperDocs API call failed."""
 
 
 class LiveSuperDocsClient:
@@ -84,10 +81,18 @@ class LiveSuperDocsClient:
         time.sleep(delay)
 
     def upload_document(self, *, document_html: str, session_id: str) -> UploadResult:
+        # upload-base64 actually wants a base64 file plus a filename (the docs show
+        # document_html, but the API rejects that); we send the HTML as an .html file.
+        file_base64 = base64.b64encode(document_html.encode("utf-8")).decode("ascii")
         data = self._request(
             "POST",
             "/v1/documents/upload-base64",
-            json={"document_html": document_html, "session_id": session_id, "return_html": True},
+            json={
+                "file_base64": file_base64,
+                "filename": f"{session_id}.html",
+                "session_id": session_id,
+                "return_html": True,
+            },
         ).json()
         return UploadResult(
             html=data.get("html", ""),
@@ -126,12 +131,18 @@ class LiveSuperDocsClient:
             usage=Usage.model_validate(usage) if usage else None,
         )
 
-    def approve(self, *, session_id: str, decisions: list[ApprovalDecision]) -> ApproveResult:
-        body = {
+    def approve(
+        self, *, session_id: str, decisions: list[ApprovalDecision], job_id: str = ""
+    ) -> ApproveResult:
+        # The API also requires the originating job_id and a top-level `approved` flag
+        # (neither shown in the docs) alongside the per-chunk changes.
+        body: dict[str, Any] = {
+            "job_id": job_id,
+            "approved": any(d.approved for d in decisions),
             "changes": [
                 {"chunk_id": d.chunk_id, "approved": d.approved, "feedback": d.feedback}
                 for d in decisions
-            ]
+            ],
         }
         data = self._request("POST", f"/v1/chat/{session_id}/approve", json=body).json()
         return ApproveResult(

@@ -81,6 +81,7 @@ class ProposedChange(BaseModel):
     chunk_id: str
     notion_block_id: str
     block_type: str = "paragraph"
+    job_id: str = ""  # the SuperDocs chat job that proposed this change (needed to approve it)
     operation: ChangeOperation
     old_html: str = ""
     new_html: str = ""

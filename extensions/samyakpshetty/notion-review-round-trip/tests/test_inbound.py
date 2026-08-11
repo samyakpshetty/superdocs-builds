@@ -120,6 +120,35 @@ def test_budget_exhaustion_parks_the_round() -> None:
     assert gate.pending == []  # circuit-breaker stopped before proposing anything
 
 
+def test_superdocs_approve_failure_still_applies_to_notion() -> None:
+    # SuperDocs' approve only syncs its own copy; a failure there must not block the Notion
+    # write-back (graceful degradation — proven live against a real SuperDocs 500).
+    from notion_review.superdocs.base import SuperDocsError
+
+    class ApproveFails(FakeSuperDocsClient):
+        def approve(self, *, session_id, decisions, job_id=""):  # type: ignore[no-untyped-def]
+            raise SuperDocsError("simulated 500")
+
+    notion, page_id = FakeNotionClient.build_sample()
+    superdocs = ApproveFails()
+    store = SQLiteStore()
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    round0 = store.get(round_id)
+    assert round0 is not None
+    aurora = next(e for e in round0.block_map if "Aurora ships in Q3" in e.original_text)
+    controller = InboundController(
+        notion=notion, superdocs=superdocs, store=store, config=Config.from_env({})
+    )
+
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    final = controller.submit(round_id=round_id, decisions=decisions)
+
+    assert final.status == RoundStatus.COMPLETED
+    assert "Q4" in notion.block_text(aurora.notion_block_id)  # still landed
+
+
 def test_read_back_mismatch_marks_the_change_failed() -> None:
     # A Notion client whose write silently does not land — the read-back must catch it.
     class DroppingNotion(FakeNotionClient):

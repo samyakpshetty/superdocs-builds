@@ -108,7 +108,8 @@ def review(round_id: str, markup: str, state: str, interactive: bool) -> None:
 @main.command()
 def whoami() -> None:
     """Check which SuperDocs account the configured API key belongs to."""
-    from notion_review.superdocs.live import LiveSuperDocsClient, SuperDocsError
+    from notion_review.superdocs.base import SuperDocsError
+    from notion_review.superdocs.live import LiveSuperDocsClient
 
     config = Config.from_env()
     if not config.superdocs_api_key:
