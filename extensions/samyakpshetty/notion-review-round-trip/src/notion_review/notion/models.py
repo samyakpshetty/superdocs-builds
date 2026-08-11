@@ -30,6 +30,8 @@ CONTAINER_TYPES = frozenset({"toggle", "callout", "table", "column_list", "colum
 
 
 class Annotations(BaseModel):
+    model_config = {"extra": "ignore"}
+
     bold: bool = False
     italic: bool = False
     strikethrough: bool = False

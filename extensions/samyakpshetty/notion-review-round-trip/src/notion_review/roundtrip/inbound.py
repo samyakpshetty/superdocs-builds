@@ -234,6 +234,19 @@ def apply_decisions(
     failed = any(p.status == ProposalStatus.FAILED for p in round_.proposals)
     round_.status = RoundStatus.FAILED if failed else RoundStatus.COMPLETED
 
+    # Close the loop on the page: a durable record of the review round and its outcome.
+    applied = sum(1 for p in round_.proposals if p.status == ProposalStatus.APPLIED)
+    rejected = sum(1 for p in round_.proposals if p.status == ProposalStatus.REJECTED)
+    try:
+        notion.create_comment(
+            page_id=round_.notion_page_id,
+            rich_text=plain_text(
+                f"Review round {round_.id} complete — {applied} applied, {rejected} rejected."
+            ),
+        )
+    except NotionError as exc:
+        _log.warning("summary_comment_failed", extra={"round_id": round_.id, "error": str(exc)})
+
 
 def _apply_one(round_: ReviewRound, proposal: ProposedChange, notion: NotionClient) -> None:
     if proposal.status == ProposalStatus.APPLIED:
