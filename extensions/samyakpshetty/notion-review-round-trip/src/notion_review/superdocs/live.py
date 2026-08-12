@@ -148,13 +148,14 @@ class LiveSuperDocsClient:
     def approve(
         self, *, session_id: str, decisions: list[ApprovalDecision], job_id: str = ""
     ) -> ApproveResult:
-        # The API also requires the originating job_id and a top-level `approved` flag
-        # (neither shown in the docs) alongside the per-chunk changes.
+        # The real contract (reverse-engineered; the docs are incomplete): the originating job_id
+        # and a top-level `approved` flag are required, and each change is keyed by `change_id`
+        # (NOT chunk_id — approving by chunk_id returns 500).
         body: dict[str, Any] = {
             "job_id": job_id,
             "approved": any(d.approved for d in decisions),
             "changes": [
-                {"chunk_id": d.chunk_id, "approved": d.approved, "feedback": d.feedback}
+                {"change_id": d.change_id, "approved": d.approved, "feedback": d.feedback}
                 for d in decisions
             ],
         }

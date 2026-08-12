@@ -194,6 +194,7 @@ def propose_changes(
             existing_keys,
             ProposedChange(
                 chunk_id=diff.chunk_id if diff else "",
+                change_id=diff.change_id if diff else "",
                 notion_block_id=edit.notion_block_id,
                 notion_page_id=edit.notion_page_id,
                 block_type=edit.block_type,
@@ -217,6 +218,7 @@ def propose_changes(
                 existing_keys,
                 ProposedChange(
                     chunk_id=diff.chunk_id,
+                    change_id=diff.change_id,
                     notion_block_id=comment.notion_block_id,
                     notion_page_id=comment.notion_page_id,
                     block_type=comment.block_type,
@@ -362,7 +364,7 @@ def apply_decisions(
         approved = bool(decision.get("approved"))
         proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
 
-    # 2. Relay the decisions to SuperDocs' approve endpoint (four-call contract), best-effort.
+    # 2. Relay the decisions to SuperDocs' approve endpoint (the fourth contract call).
     _relay_to_superdocs_approve(round_, superdocs)
 
     # 3. Write each approved change back to Notion — idempotent, verified, attributed.
@@ -378,22 +380,22 @@ def apply_decisions(
 
 
 def _relay_to_superdocs_approve(round_: ReviewRound, superdocs: SuperDocsClient) -> None:
-    """Relay the human's decisions to SuperDocs' ``approve`` — best-effort, item-by-item.
+    """Relay the human's decisions to SuperDocs' ``approve`` — the fourth contract call.
 
-    This is the fourth contract call. It applies the decision to SuperDocs' own copy of the
-    document; the authoritative write is the Notion write-back, so a failure here (the endpoint is
-    currently unreliable) never blocks the review — it is logged and the round proceeds.
+    It applies each decision to SuperDocs' own copy of the document (keyed by ``change_id``). The
+    authoritative write is still the Notion write-back, so a transport failure here is logged and
+    the round proceeds — the source of truth is never left inconsistent.
     """
     decided = [
         p
         for p in round_.proposals
-        if p.chunk_id and p.status in (ProposalStatus.APPROVED, ProposalStatus.REJECTED)
+        if p.change_id and p.status in (ProposalStatus.APPROVED, ProposalStatus.REJECTED)
     ]
     if not decided:
         return
     job_id = next((p.job_id for p in decided if p.job_id), "")
     decisions = [
-        ApprovalDecision(chunk_id=p.chunk_id, approved=p.status == ProposalStatus.APPROVED)
+        ApprovalDecision(change_id=p.change_id, approved=p.status == ProposalStatus.APPROVED)
         for p in decided
     ]
     try:
@@ -403,7 +405,7 @@ def _relay_to_superdocs_approve(round_: ReviewRound, superdocs: SuperDocsClient)
             extra={"round_id": round_.id, "applied": result.applied_count},
         )
     except SuperDocsError as exc:
-        _log.warning("superdocs_approve_degraded", extra={"round_id": round_.id, "error": str(exc)})
+        _log.warning("superdocs_approve_failed", extra={"round_id": round_.id, "error": str(exc)})
 
 
 def _post_page_summaries(round_: ReviewRound, notion: NotionClient) -> None:

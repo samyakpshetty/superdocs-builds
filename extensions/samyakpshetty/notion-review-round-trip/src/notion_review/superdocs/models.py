@@ -39,6 +39,7 @@ class ChunkDiff(BaseModel):
     model_config = {"extra": "ignore"}
 
     chunk_id: str
+    change_id: str = ""  # the id `approve` keys on (distinct from chunk_id; chunk_id 500s)
     operation: str
     old_html: str = ""
     new_html: str = ""
@@ -69,9 +70,9 @@ class Job(BaseModel):
 
 
 class ApprovalDecision(BaseModel):
-    """One item in the item-by-item human gate."""
+    """One item in the item-by-item human gate. ``approve`` keys on ``change_id``, not chunk_id."""
 
-    chunk_id: str
+    change_id: str
     approved: bool
     feedback: str = ""
 

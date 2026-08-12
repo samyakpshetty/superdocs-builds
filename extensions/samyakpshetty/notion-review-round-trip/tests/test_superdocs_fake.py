@@ -81,7 +81,7 @@ def test_review_mode_proposes_pending_then_approve_applies() -> None:
 
     client.approve(
         session_id="s1",
-        decisions=[ApprovalDecision(chunk_id=job.chunk_diffs[0].chunk_id, approved=True)],
+        decisions=[ApprovalDecision(change_id=job.chunk_diffs[0].change_id, approved=True)],
         job_id=job_id,
     )
     assert "red fox" in client.session_html("s1")  # approve applies it to SuperDocs' own copy

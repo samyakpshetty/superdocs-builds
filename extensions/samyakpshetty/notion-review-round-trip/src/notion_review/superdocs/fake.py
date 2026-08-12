@@ -222,6 +222,7 @@ class FakeSuperDocsClient:
             new_html = lxml_html.tostring(clone, encoding="unicode")
         return ChunkDiff(
             chunk_id=chunk_id,
+            change_id=self._next("change"),  # distinct from chunk_id, like the real API
             operation=operation.value,
             old_html=old_html,
             new_html=new_html,
@@ -245,14 +246,14 @@ class FakeSuperDocsClient:
     ) -> ApproveResult:
         session = self._sessions.get(session_id)
         applied = denied = 0
-        by_chunk = {d.chunk_id: d for d in decisions}
+        by_change = {d.change_id: d for d in decisions}  # approve keys on change_id, not chunk_id
         for record in self._jobs.values():
             if record.session_id != session_id or record.status != JobStatus.AWAITING_APPROVAL:
                 continue
             if job_id and record.job_id != job_id:
                 continue
             for diff in parse_pending_changes(record.metadata):
-                decision = by_chunk.get(diff.chunk_id)
+                decision = by_change.get(diff.change_id)
                 if decision is None:
                     continue
                 if decision.approved:

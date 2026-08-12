@@ -81,6 +81,7 @@ class ProposedChange(BaseModel):
 
     id: str = Field(default_factory=lambda: _new_id("chg"))
     chunk_id: str
+    change_id: str = ""  # SuperDocs' change id — what `approve` keys on
     notion_block_id: str
     notion_page_id: str = ""  # the page this change writes back to (multi-page packets)
     block_type: str = "paragraph"
