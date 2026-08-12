@@ -207,6 +207,34 @@ INTENT_PARA = "The ingestion service runs on a single Postgres instance behind a
 INTENT_COMMENT = "Make this sentence concise and professional."
 
 
+# A reviewer QUESTION only the owner can answer — must never become an AI-authored edit.
+QUESTION_PARA = "The service targets ninety-nine point nine percent availability."
+QUESTION_COMMENT = "Which region should we deploy this in first?"
+
+
+def question_comment_docx() -> bytes:
+    """One paragraph with a question comment (no edit intent)."""
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p>"
+        f'<w:commentRangeStart w:id="0"/>'
+        f'<w:r><w:t xml:space="preserve">{QUESTION_PARA}</w:t></w:r>'
+        f'<w:commentRangeEnd w:id="0"/>'
+        f'<w:r><w:commentReference w:id="0"/></w:r>'
+        f"</w:p>"
+        f"</w:body></w:document>"
+    )
+    comments = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:comments xmlns:w="{W}">'
+        f'<w:comment w:id="0" w:author="{COMMENT_AUTHOR}" w:date="2026-08-12T11:00:00Z" '
+        f'w:initials="SE"><w:p><w:r><w:t>{QUESTION_COMMENT}</w:t></w:r></w:p></w:comment>'
+        f"</w:comments>"
+    )
+    return build_docx(document, comments)
+
+
 def comment_intent_docx() -> bytes:
     """One paragraph carrying a directive comment (an edit request), no tracked change."""
     document = (

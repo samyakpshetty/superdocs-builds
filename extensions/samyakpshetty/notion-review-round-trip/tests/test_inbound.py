@@ -13,9 +13,12 @@ from _docx_fixtures import (
     PACKET_P1_PROPOSED,
     PACKET_P2_ORIGINAL,
     PACKET_P2_PROPOSED,
+    QUESTION_COMMENT,
+    QUESTION_PARA,
     comment_intent_docx,
     duplicate_second_edited_docx,
     packet_review_docx,
+    question_comment_docx,
     reviewed_docx,
     unchanged_docx,
 )
@@ -128,6 +131,33 @@ def test_comment_becomes_an_ai_authored_edit_gated_and_written_to_notion() -> No
     )
     assert final.status == RoundStatus.COMPLETED
     assert "[revised]" in notion.block_text(block)  # the AI-authored edit landed on the block
+
+
+def test_a_reviewer_question_stays_a_comment_for_the_owner_never_an_ai_edit() -> None:
+    # A question only the owner can answer must never be handed to the AI (it could fabricate an
+    # answer). It is surfaced as an attributed Notion comment; the block text is left untouched.
+    notion = FakeNotionClient()
+    page_id = notion.new_page("Spec")
+    block = notion.add(page_id, "paragraph", QUESTION_PARA)
+    superdocs = FakeSuperDocsClient()
+    store = SQLiteStore()
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    controller = InboundController(
+        notion=notion, superdocs=superdocs, store=store, config=Config.from_env({})
+    )
+
+    gate = controller.start(round_id=round_id, docx_bytes=question_comment_docx())
+    assert len(gate.pending) == 1
+    assert gate.pending[0].source == ChangeSource.COMMENT  # a note, not an AI-authored edit
+    assert superdocs.chat_calls() == 0  # the question was never sent to SuperDocs
+
+    final = controller.submit(
+        round_id=round_id, decisions=[{"proposal_id": gate.pending[0].id, "approved": True}]
+    )
+    assert final.status == RoundStatus.COMPLETED
+    assert notion.block_text(block) == QUESTION_PARA  # untouched — no fabricated answer
+    assert any(QUESTION_COMMENT in c.plain() for c in notion.comments_for(block))
 
 
 def test_drift_in_notion_is_a_conflict_not_a_silent_overwrite() -> None:

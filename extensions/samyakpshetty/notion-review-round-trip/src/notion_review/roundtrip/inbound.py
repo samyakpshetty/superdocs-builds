@@ -137,6 +137,16 @@ def _reviewer_of(authors: list[str], comments: list[DocxComment]) -> str:
     return "Unknown reviewer"
 
 
+def _is_edit_request(comment: str) -> bool:
+    """Whether a comment directs an edit (vs. asks a question only the owner can answer).
+
+    A deliberate, conservative heuristic layered ahead of the AI and the human gate: a question is
+    never sent to SuperDocs to author, so the AI cannot fabricate an answer into the document; it is
+    surfaced to the owner as a comment instead. The human gate catches anything this misclassifies.
+    """
+    return not _norm(comment).endswith("?")
+
+
 def propose_changes(
     round_: ReviewRound,
     superdocs: SuperDocsClient,
@@ -154,18 +164,27 @@ def propose_changes(
     """
     existing_keys = {p.content_key() for p in round_.proposals}
     edits: list[MatchedEdit] = []
-    comments: list[MatchedEdit] = []
+    comment_edits: list[MatchedEdit] = []
+    questions: list[MatchedEdit] = []
     for edit in matched:
-        if config.sample_size is not None and len(edits) + len(comments) >= config.sample_size:
+        total = len(edits) + len(comment_edits) + len(questions)
+        if config.sample_size is not None and total >= config.sample_size:
             break
         if edit.is_text_change:
             edits.append(edit)
         elif edit.comment:
-            comments.append(edit)
+            # A directive ("tighten this") is an edit request for SuperDocs' AI to author. A
+            # question ("which version?") is not — only the owner can answer it, so it must never
+            # be handed to the AI (which could fabricate an answer). It becomes a Notion comment.
+            (comment_edits if _is_edit_request(edit.comment) else questions).append(edit)
 
     specs = [EditSpec(ChangeOperation.REPLACE, e.original_text, e.proposed_text) for e in edits]
-    intents = [IntentSpec(request=c.comment, passage=c.original_text) for c in comments]
+    intents = [IntentSpec(request=c.comment, passage=c.original_text) for c in comment_edits]
     job = _run_superdocs_review(round_, superdocs, specs, intents, config)
+
+    # Questions go straight to the owner as attributed Notion comments — never to the AI.
+    for question in questions:
+        _add_proposal(round_, existing_keys, _comment_proposal(question))
 
     # Tracked changes: reviewer text is authoritative; ride SuperDocs' chunk id for approve.
     for edit in edits:
@@ -188,8 +207,8 @@ def propose_changes(
             ),
         )
 
-    # Comments: SuperDocs' AI authored the edit; if it declined, keep the comment as a note.
-    for comment in comments:
+    # Directive comments: SuperDocs' AI authored the edit; if it declined, keep it as a note.
+    for comment in comment_edits:
         diff = _match_diff(job, comment.original_text)
         if diff is not None and diff.new_html:
             new_text = plain_text_from_html(diff.new_html)
