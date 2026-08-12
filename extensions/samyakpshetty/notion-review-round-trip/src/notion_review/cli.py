@@ -161,11 +161,17 @@ def _collect_decisions(
 
 def _print_card(number: int, proposal: ProposedChange) -> None:
     click.secho(f"  [{number}] {proposal.reviewer_name}", fg="yellow", bold=True)
-    if proposal.source == ChangeSource.TRACKED_CHANGE:
+    if proposal.source == ChangeSource.COMMENT:
+        click.echo(f"      comment: {proposal.reviewer_comment}")
+    else:
+        if proposal.source == ChangeSource.COMMENT_INTENT:
+            click.echo(f"      request: {proposal.reviewer_comment}")
+            if proposal.ai_explanation:
+                click.echo(f"      SuperDocs: {proposal.ai_explanation}")
         click.echo(f"      was: {_text(proposal.old_html)}")
         click.echo(f"      now: {_text(proposal.new_html)}")
-    else:
-        click.echo(f"      comment: {proposal.reviewer_comment}")
+    for link in proposal.links:  # surface any URL an edit would introduce, before it lands
+        click.secho(f"      ⚠ link: {link}", fg="red")
 
 
 def _print_outcome(proposals: list[ProposedChange], notion: NotionClient) -> None:

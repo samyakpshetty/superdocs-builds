@@ -56,6 +56,9 @@ class Config(BaseModel):
     max_ops_per_round: int = Field(default=200, ge=1)
     # In sample mode we propose at most this many changes — learn cost on a slice first.
     sample_size: int | None = Field(default=None, ge=1)
+    # Safety rail: a single edit's text may not exceed this many characters. Untrusted markup (or a
+    # hostile comment steering the AI) could otherwise balloon a block; over-cap edits are refused.
+    max_edit_chars: int = Field(default=20_000, ge=1)
 
     # --- Resilience knobs ---
     superdocs_max_retries: int = Field(default=5, ge=0)

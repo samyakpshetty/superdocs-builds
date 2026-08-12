@@ -7,6 +7,7 @@ proposing spends SuperDocs operations, and it is budget-guarded.
 
 from __future__ import annotations
 
+import re
 import time
 from html import escape
 
@@ -52,6 +53,27 @@ def _clip(text: str, limit: int = 120) -> str:
     """Shorten text for a provenance comment without dropping the sense of the change."""
     text = _norm(text)
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+_URI_RE = re.compile(
+    r"\b((?:https?|ftp|mailto|javascript|data|vbscript|file):[^\s<>\"')\]]+)", re.I
+)
+_DANGEROUS_SCHEMES = frozenset({"javascript", "data", "vbscript", "file"})
+
+
+def _extract_links(text: str) -> list[str]:
+    """URLs an edit introduces, for the approver to see before it lands.
+
+    An edit — a reviewer's, or one SuperDocs' AI wrote from a hostile comment — can smuggle in a
+    link (phishing, exfiltration). We surface every URI at the gate, flagging dangerous schemes, so
+    a human sees exactly what a change would add. The link is never followed here, only shown.
+    """
+    seen: dict[str, None] = {}
+    for match in _URI_RE.finditer(text):
+        uri = match.group(1)
+        scheme = uri.split(":", 1)[0].lower()
+        seen.setdefault(f"⚠ dangerous scheme: {uri}" if scheme in _DANGEROUS_SCHEMES else uri, None)
+    return list(seen)
 
 
 def plain_text_from_html(html: str) -> str:
@@ -205,6 +227,7 @@ def propose_changes(
                 source=ChangeSource.TRACKED_CHANGE,
                 reviewer_name=edit.reviewer,
                 reviewer_comment=edit.comment,
+                links=_extract_links(edit.proposed_text),
             ),
         )
 
@@ -230,6 +253,7 @@ def propose_changes(
                     reviewer_name=comment.reviewer,
                     reviewer_comment=comment.comment,
                     ai_explanation=diff.ai_explanation,
+                    links=_extract_links(new_text),
                 ),
             )
         else:
@@ -347,12 +371,13 @@ def apply_decisions(
     decisions: list[dict[str, object]],
     notion: NotionClient,
     superdocs: SuperDocsClient,
+    config: Config,
 ) -> None:
     """Record the human's item-by-item decisions, then apply the approved changes.
 
     The human gate is the review: it decides what lands. Each decision is relayed to SuperDocs'
-    ``approve`` (the fourth contract call, which edits SuperDocs' own copy) as a best-effort step,
-    and then written authoritatively onto the Notion block via Notion's API — the source of truth.
+    ``approve`` (the fourth contract call, which edits SuperDocs' own copy), and then written
+    authoritatively onto the Notion block via Notion's API — the source of truth.
     """
     decision_by_id = {str(d["proposal_id"]): d for d in decisions}
 
@@ -371,7 +396,7 @@ def apply_decisions(
     round_.status = RoundStatus.APPLYING
     for proposal in round_.proposals:
         if proposal.status == ProposalStatus.APPROVED:
-            _apply_one(round_, proposal, notion)
+            _apply_one(round_, proposal, notion, config)
 
     failed = any(p.status == ProposalStatus.FAILED for p in round_.proposals)
     round_.status = RoundStatus.FAILED if failed else RoundStatus.COMPLETED
@@ -430,11 +455,31 @@ def _post_page_summaries(round_: ReviewRound, notion: NotionClient) -> None:
             )
 
 
-def _apply_one(round_: ReviewRound, proposal: ProposedChange, notion: NotionClient) -> None:
+def _apply_one(
+    round_: ReviewRound, proposal: ProposedChange, notion: NotionClient, config: Config
+) -> None:
     if proposal.status == ProposalStatus.APPLIED:
         return  # idempotent: already written on an earlier (interrupted) run
     try:
         if proposal.source in (ChangeSource.TRACKED_CHANGE, ChangeSource.COMMENT_INTENT):
+            new_text = plain_text_from_html(proposal.new_html)
+            # Size rail: refuse an edit whose text exceeds the cap. Untrusted markup, or a hostile
+            # comment steering the AI, could otherwise balloon a block — surfaced, never written.
+            if len(new_text) > config.max_edit_chars:
+                proposal.status = ProposalStatus.FAILED
+                proposal.error = (
+                    f"edit exceeds the {config.max_edit_chars}-char size cap "
+                    f"({len(new_text)} chars); not applied"
+                )
+                _log.warning(
+                    "edit_too_large",
+                    extra={
+                        "round_id": round_.id,
+                        "proposal_id": proposal.id,
+                        "chars": len(new_text),
+                    },
+                )
+                return
             # Drift guard: the reviewer marked up the text we sent. If the Notion block changed
             # since then (someone edited the page while it was out for review), overwriting would
             # silently discard that newer edit. Surface the conflict instead — never clobber.
@@ -448,7 +493,6 @@ def _apply_one(round_: ReviewRound, proposal: ProposedChange, notion: NotionClie
                     extra={"round_id": round_.id, "proposal_id": proposal.id},
                 )
                 return
-            new_text = plain_text_from_html(proposal.new_html)
             # Surgical write-back: keep the block's untouched runs (bold, links, colour) exactly as
             # they were, rewriting only the span the reviewer actually changed.
             notion.update_block(

@@ -93,6 +93,7 @@ class ProposedChange(BaseModel):
     reviewer_name: str = "Unknown reviewer"
     reviewer_comment: str = ""
     ai_explanation: str = ""  # SuperDocs' note when its AI authored the edit (comment-intent)
+    links: list[str] = Field(default_factory=list)  # URLs the edit introduces; shown at the gate
     status: ProposalStatus = ProposalStatus.PENDING
     error: str | None = None
 

@@ -9,6 +9,7 @@ from _docx_fixtures import (
     DUP_TEXT,
     INTENT_COMMENT,
     INTENT_PARA,
+    LINK_ORIGINAL,
     PACKET_P1_ORIGINAL,
     PACKET_P1_PROPOSED,
     PACKET_P2_ORIGINAL,
@@ -17,6 +18,7 @@ from _docx_fixtures import (
     QUESTION_PARA,
     comment_intent_docx,
     duplicate_second_edited_docx,
+    link_and_script_docx,
     packet_review_docx,
     question_comment_docx,
     reviewed_docx,
@@ -158,6 +160,61 @@ def test_a_reviewer_question_stays_a_comment_for_the_owner_never_an_ai_edit() ->
     assert final.status == RoundStatus.COMPLETED
     assert notion.block_text(block) == QUESTION_PARA  # untouched — no fabricated answer
     assert any(QUESTION_COMMENT in c.plain() for c in notion.comments_for(block))
+
+
+def test_extract_links_flags_urls_and_dangerous_schemes() -> None:
+    from notion_review.roundtrip.inbound import _extract_links
+
+    links = _extract_links("Ping https://ok.example.com or click javascript:steal() now")
+    assert "https://ok.example.com" in links
+    assert any("dangerous scheme" in link and "javascript:" in link for link in links)
+    assert _extract_links("no links here") == []
+
+
+def test_an_edits_links_are_surfaced_and_script_content_lands_inert() -> None:
+    notion = FakeNotionClient()
+    page_id = notion.new_page("Spec")
+    block = notion.add(page_id, "paragraph", LINK_ORIGINAL)
+    superdocs = FakeSuperDocsClient()
+    store = SQLiteStore()
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    controller = InboundController(
+        notion=notion, superdocs=superdocs, store=store, config=Config.from_env({})
+    )
+
+    gate = controller.start(round_id=round_id, docx_bytes=link_and_script_docx())
+    assert any("evil.example.com" in link for link in gate.pending[0].links)  # surfaced at the gate
+
+    controller.submit(
+        round_id=round_id, decisions=[{"proposal_id": gate.pending[0].id, "approved": True}]
+    )
+    landed = notion.block_text(block)
+    assert "<script>" in landed  # written as literal text — a tag, not executable structure
+    assert "evil.example.com" in landed
+
+
+def test_an_oversized_edit_is_refused_at_the_write_boundary() -> None:
+    notion, page_id = FakeNotionClient.build_sample()
+    superdocs = FakeSuperDocsClient()
+    store = SQLiteStore()
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    round0 = store.get(round_id)
+    assert round0 is not None
+    aurora = next(e for e in round0.block_map if "Aurora ships in Q3" in e.original_text)
+    tiny_cap = Config(max_edit_chars=5)  # the Q4 edit is far longer than 5 chars
+    controller = InboundController(notion=notion, superdocs=superdocs, store=store, config=tiny_cap)
+
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    text_change = next(p for p in gate.pending if p.source == ChangeSource.TRACKED_CHANGE)
+    final = controller.submit(
+        round_id=round_id, decisions=[{"proposal_id": text_change.id, "approved": True}]
+    )
+
+    refused = next(p for p in final.proposals if p.id == text_change.id)
+    assert refused.status == ProposalStatus.FAILED and "size cap" in (refused.error or "")
+    assert "Q4" not in notion.block_text(aurora.notion_block_id)  # never written
 
 
 def test_drift_in_notion_is_a_conflict_not_a_silent_overwrite() -> None:

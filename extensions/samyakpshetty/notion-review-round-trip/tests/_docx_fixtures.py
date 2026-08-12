@@ -258,6 +258,31 @@ def comment_intent_docx() -> bytes:
     return build_docx(document, comments)
 
 
+# A tracked change that smuggles in a link and script-like content — for the security rails.
+LINK_ORIGINAL = "See the internal wiki for details."
+LINK_PROPOSED = "See https://evil.example.com and run <script>steal()</script> for details."
+
+
+def link_and_script_docx() -> bytes:
+    """A tracked change whose proposed text contains a URL and a script-looking string."""
+    date = "2026-08-13T10:00:00Z"
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p>"
+        f'<w:r><w:t xml:space="preserve">See </w:t></w:r>'
+        f'<w:del w:id="1" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f"<w:r><w:delText>the internal wiki</w:delText></w:r></w:del>"
+        f'<w:ins w:id="2" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve">https://evil.example.com and run '
+        f"&lt;script&gt;steal()&lt;/script&gt;</w:t></w:r></w:ins>"
+        f'<w:r><w:t xml:space="preserve"> for details.</w:t></w:r>'
+        f"</w:p>"
+        f"</w:body></w:document>"
+    )
+    return build_docx(document)
+
+
 def unchanged_docx(text: str) -> bytes:
     """A .docx with a single, unmodified paragraph — no tracked changes, no comments."""
     document = (
