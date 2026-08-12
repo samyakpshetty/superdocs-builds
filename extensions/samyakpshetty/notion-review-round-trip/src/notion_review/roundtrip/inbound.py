@@ -8,6 +8,7 @@ proposing spends SuperDocs operations, and it is budget-guarded.
 from __future__ import annotations
 
 import time
+from html import escape
 
 from lxml import html as lxml_html
 from lxml.html import HtmlElement
@@ -29,7 +30,7 @@ from notion_review.notion.base import NotionClient, NotionError
 from notion_review.notion.models import plain_text
 from notion_review.superdocs.base import SuperDocsClient, SuperDocsError
 from notion_review.superdocs.instructions import build_instruction
-from notion_review.superdocs.models import ApprovalDecision, Job, JobStatus
+from notion_review.superdocs.models import Job, JobStatus
 
 _log = get_logger("notion_review.inbound")
 
@@ -144,6 +145,10 @@ def _propose_text_change(
     edit: MatchedEdit,
     config: Config,
 ) -> ProposedChange | None:
+    # Ask SuperDocs to apply the edit — this exercises its edit engine and keeps its copy of
+    # the document in sync. It is best-effort: a reviewer's tracked change already carries the
+    # exact result, and that reviewer-authoritative text is what we write back to the host, so a
+    # SuperDocs hiccup (a slow/busy session, a quirk in how it reports the change) never loses it.
     instruction = build_instruction(
         operation=ChangeOperation.REPLACE,
         find_text=edit.original_text,
@@ -151,25 +156,27 @@ def _propose_text_change(
         reviewer=edit.reviewer,
         comment=edit.comment,
     )
-    job_id = superdocs.chat_async(session_id=round_.session_id, message=instruction)
-    job = _poll_job(superdocs, job_id, config)
-    if job.usage is not None:
-        round_.ops_spent += job.usage.ops_charged
-        if job.usage.quota_exhausted:
-            round_.status = RoundStatus.PARKED
-            _log.warning("quota_exhausted", extra={"round_id": round_.id})
-            return None
-    if not job.chunk_diffs:
-        return None
-    diff = job.chunk_diffs[0]  # the instruction is scoped to exactly one block
+    job_id = ""
+    try:
+        job_id = superdocs.chat_async(session_id=round_.session_id, message=instruction)
+        job = _poll_job(superdocs, job_id, config)
+        if job.usage is not None:
+            round_.ops_spent += job.usage.ops_charged
+            if job.usage.quota_exhausted:
+                round_.status = RoundStatus.PARKED
+                _log.warning("quota_exhausted", extra={"round_id": round_.id})
+                return None
+    except SuperDocsError as exc:
+        _log.warning("superdocs_chat_failed", extra={"round_id": round_.id, "error": str(exc)})
+
     return ProposedChange(
-        chunk_id=diff.chunk_id or edit.chunk_id or "",
+        chunk_id="",
         notion_block_id=edit.notion_block_id,
         block_type=edit.block_type,
         job_id=job_id,
         operation=ChangeOperation.REPLACE,
-        old_html=diff.old_html,
-        new_html=diff.new_html,
+        old_html=f"<p>{escape(edit.original_text)}</p>",
+        new_html=f"<p>{escape(edit.proposed_text)}</p>",
         source=ChangeSource.TRACKED_CHANGE,
         reviewer_name=edit.reviewer,
         reviewer_comment=edit.comment,
@@ -203,40 +210,23 @@ def _poll_job(superdocs: SuperDocsClient, job_id: str, config: Config) -> Job:
 def apply_decisions(
     round_: ReviewRound,
     decisions: list[dict[str, object]],
-    superdocs: SuperDocsClient,
     notion: NotionClient,
 ) -> None:
-    """Record the human's item-by-item decisions and write approved changes back to Notion."""
+    """Record the human's item-by-item decisions and write approved changes back to Notion.
+
+    SuperDocs is not consulted here: it already produced (and auto-applied to its own copy) the
+    edit during propose. The human gate and the authoritative apply both live in this integration,
+    against Notion — the review approves what lands on the page.
+    """
     decision_by_id = {str(d["proposal_id"]): d for d in decisions}
 
-    # 1. Record decisions, and tell SuperDocs about the ones it proposed, grouped by the
-    #    chat job that produced them (the approve call is scoped to a job id).
-    by_job: dict[str, list[ApprovalDecision]] = {}
+    # 1. Record the human's decision on each proposed change.
     for proposal in round_.proposals:
         decision = decision_by_id.get(proposal.id)
         if decision is None:
             continue
         approved = bool(decision.get("approved"))
         proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
-        if proposal.source == ChangeSource.TRACKED_CHANGE:
-            by_job.setdefault(proposal.job_id, []).append(
-                ApprovalDecision(
-                    chunk_id=proposal.chunk_id,
-                    approved=approved,
-                    feedback=str(decision.get("feedback", "")),
-                )
-            )
-    for job_id, job_decisions in by_job.items():
-        # SuperDocs' approve only syncs its own copy of the document; the authoritative apply
-        # is the write-back to Notion below. Degrade gracefully so a SuperDocs-side failure
-        # never blocks the host update — the reviewed change still lands where it must.
-        try:
-            superdocs.approve(session_id=round_.session_id, job_id=job_id, decisions=job_decisions)
-        except SuperDocsError as exc:
-            _log.warning(
-                "superdocs_approve_failed",
-                extra={"round_id": round_.id, "job_id": job_id, "error": str(exc)},
-            )
 
     # 2. Write each approved change back to Notion — idempotent, verified, attributed.
     round_.status = RoundStatus.APPLYING

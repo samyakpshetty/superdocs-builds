@@ -4,7 +4,6 @@ import json
 
 from notion_review.domain import ChangeOperation
 from notion_review.superdocs import (
-    ApprovalDecision,
     FakeSuperDocsClient,
     JobStatus,
     SuperDocsClient,
@@ -60,7 +59,7 @@ def test_instruction_round_trips() -> None:
     assert parse_instruction("not our contract") is None
 
 
-def test_full_edit_flow_proposes_then_applies_on_approval() -> None:
+def test_chat_auto_applies_and_returns_a_diff() -> None:
     client = FakeSuperDocsClient()
     client.upload_document(document_html=DOC, session_id="s1")
 
@@ -68,28 +67,23 @@ def test_full_edit_flow_proposes_then_applies_on_approval() -> None:
         session_id="s1", message=_edit("The quick brown fox.", "The quick red fox.")
     )
     job = client.get_job(job_id)
-    assert job.status == JobStatus.AWAITING_APPROVAL
+    # No review mode: the edit auto-applies and the job completes (session is free), and the
+    # diff is still returned so the integration can gate it and write it to the host.
+    assert job.status == JobStatus.COMPLETED
     assert len(job.chunk_diffs) == 1
     assert client.monthly_used() == 1  # one op charged
-
-    target = job.chunk_diffs[0].chunk_id
-    client.approve(session_id="s1", decisions=[ApprovalDecision(chunk_id=target, approved=True)])
     assert "red fox" in client.session_html("s1")
     assert "brown fox" not in client.session_html("s1")
 
 
-def test_rejection_leaves_the_document_untouched() -> None:
+def test_two_edits_in_one_session_do_not_block() -> None:
+    # The reason we dropped review mode: back-to-back edits must both go through.
     client = FakeSuperDocsClient()
     client.upload_document(document_html=DOC, session_id="s1")
-    job_id = client.chat_async(
-        session_id="s1", message=_edit("The quick brown fox.", "The quick red fox.")
-    )
-    target = client.get_job(job_id).chunk_diffs[0].chunk_id
-    result = client.approve(
-        session_id="s1", decisions=[ApprovalDecision(chunk_id=target, approved=False)]
-    )
-    assert result.denied_count == 1
-    assert "brown fox" in client.session_html("s1")
+    client.chat_async(session_id="s1", message=_edit("The quick brown fox.", "The quick red fox."))
+    client.chat_async(session_id="s1", message=_edit("Second paragraph here.", "Second para."))
+    html = client.session_html("s1")
+    assert "red fox" in html and "Second para." in html
 
 
 def test_no_op_edit_charges_nothing() -> None:

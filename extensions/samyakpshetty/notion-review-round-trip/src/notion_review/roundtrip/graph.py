@@ -96,7 +96,7 @@ def build_review_graph(
 
     def apply(state: ReviewState) -> ReviewState:
         round_ = _load(store, state["round_id"])
-        apply_decisions(round_, state.get("decisions", []), superdocs, notion)
+        apply_decisions(round_, state.get("decisions", []), notion)
         store.save(round_)
         _log.info(
             "changes_applied",

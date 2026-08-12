@@ -141,13 +141,16 @@ class FakeSuperDocsClient:
         if session is not None and parsed is not None:
             target = session.by_text(parsed.find_text)
             if target is not None:
-                diffs.append(self._diff_for(target, parsed.operation, parsed.replace_text))
+                diff = self._diff_for(target, parsed.operation, parsed.replace_text)
+                diffs.append(diff)
+                self._apply(session, diff)  # auto-apply to our own copy (no review mode)
 
         # One operation per edit request (real API: 1 op per <=25 sections). A request that
-        # produces no change costs nothing, mirroring the free-when-nothing-changed rule.
+        # produces no change costs nothing, mirroring the free-when-nothing-changed rule. The
+        # edit auto-applies and the job completes — no pending proposal, so the session frees.
         ops = 1 if diffs else 0
         self._monthly_used += ops
-        status = JobStatus.AWAITING_APPROVAL if diffs else JobStatus.COMPLETED
+        status = JobStatus.COMPLETED
         metadata = {"pending_changes": json.dumps([d.model_dump() for d in diffs])}
         self._jobs[job_id] = _JobRecord(
             job_id=job_id,
