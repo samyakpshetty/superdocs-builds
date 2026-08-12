@@ -32,6 +32,10 @@ from notion_review.superdocs.models import (
 _log = get_logger("notion_review.superdocs.live")
 _RETRYABLE = frozenset({429, 500, 502, 503, 504})
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+# The session locks while SuperDocs is still processing a request ("session_busy", 409). This
+# is the documented "still processing, not a crash" state, so we wait for it to clear.
+_BUSY_WAIT_S = 5.0
+_BUSY_RETRIES = 36  # up to ~3 minutes, matching SuperDocs' stated latency ceiling
 
 
 class LiveSuperDocsClient:
@@ -56,6 +60,7 @@ class LiveSuperDocsClient:
         self, method: str, path: str, *, json: dict[str, Any] | None = None
     ) -> httpx.Response:
         attempt = 0
+        busy = 0
         while True:
             try:
                 resp = self._client.request(method, path, json=json)
@@ -64,6 +69,11 @@ class LiveSuperDocsClient:
                     raise SuperDocsError(f"{method} {path}: {exc}") from exc
                 self._sleep(attempt, None)
                 attempt += 1
+                continue
+            if resp.status_code == 409 and "session_busy" in resp.text and busy < _BUSY_RETRIES:
+                _log.info("session_busy_waiting", extra={"path": path, "attempt": busy})
+                time.sleep(_BUSY_WAIT_S)
+                busy += 1
                 continue
             if resp.status_code in _RETRYABLE and attempt < self._max_retries:
                 self._sleep(attempt, resp.headers.get("Retry-After"))
