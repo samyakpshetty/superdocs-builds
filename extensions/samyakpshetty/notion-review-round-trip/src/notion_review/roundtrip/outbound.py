@@ -84,15 +84,49 @@ def send_for_review(
     store: Store,
     page_id: str,
 ) -> ReviewPacket:
-    """Send a Notion page out for formal review; returns the round and the Word file."""
-    page = notion.retrieve_page(page_id)
-    tree = fetch_block_tree(notion, page_id)
-    html, block_map = blocks_to_html(tree)
+    """Send a single Notion page out for formal review; returns the round and the Word file."""
+    return send_packet_for_review(
+        notion=notion, superdocs=superdocs, store=store, page_ids=[page_id]
+    )
 
-    round_ = ReviewRound(notion_page_id=page_id, block_map=block_map)
-    _log.info("review_round_created", extra={"round_id": round_.id, "blocks": len(block_map)})
 
-    upload = superdocs.upload_document(document_html=html, session_id=round_.session_id)
+def send_packet_for_review(
+    *,
+    notion: NotionClient,
+    superdocs: SuperDocsClient,
+    store: Store,
+    page_ids: list[str],
+) -> ReviewPacket:
+    """Send one or more Notion pages out as a single review document.
+
+    Each page's blocks are rendered in turn into one styled Word file, and every block-map entry
+    is tagged with the page it came from, so an approved change fans back to the exact block on
+    the exact originating page — never the wrong one, even when two pages share a heading.
+    """
+    if not page_ids:
+        raise ValueError("send_packet_for_review needs at least one page id")
+
+    pages = []
+    html_parts: list[str] = []
+    block_map: list[BlockMapEntry] = []
+    for page_id in page_ids:
+        page = notion.retrieve_page(page_id)
+        pages.append(page)
+        html, page_map = blocks_to_html(fetch_block_tree(notion, page_id))
+        for entry in page_map:
+            entry.notion_page_id = page_id
+        block_map.extend(page_map)
+        html_parts.append(html)
+
+    round_ = ReviewRound(notion_page_id=page_ids[0], block_map=block_map)
+    _log.info(
+        "review_round_created",
+        extra={"round_id": round_.id, "pages": len(pages), "blocks": len(block_map)},
+    )
+
+    upload = superdocs.upload_document(
+        document_html="".join(html_parts), session_id=round_.session_id
+    )
     matched = reconcile_chunks(upload.html, round_.block_map)
     round_.sent_version_id = upload.version_id
     if matched < len(block_map):
@@ -103,17 +137,18 @@ def send_for_review(
 
     docx = superdocs.export(session_id=round_.session_id, fmt="docx")
 
-    round_.review_url = f"{page.url}#review-{round_.id}"
+    round_.review_url = f"{pages[0].url}#review-{round_.id}"
     round_.status = RoundStatus.SENT
     store.save(round_)
 
-    notion.create_comment(
-        page_id=page_id,
-        rich_text=plain_text(
-            f"Sent for external review · round {round_.id}. "
-            "Approved changes will be applied to this page and recorded here."
-        ),
-    )
+    for page in pages:
+        notion.create_comment(
+            page_id=page.id,
+            rich_text=plain_text(
+                f"Sent for external review · round {round_.id}. "
+                "Approved changes will be applied to this page and recorded here."
+            ),
+        )
     _log.info(
         "review_round_sent",
         extra={

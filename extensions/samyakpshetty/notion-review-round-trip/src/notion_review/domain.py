@@ -67,6 +67,7 @@ class BlockMapEntry(BaseModel):
     """One Notion block ⇄ one SuperDocs chunk. The reversible link for write-back."""
 
     notion_block_id: str
+    notion_page_id: str = ""  # which page in a multi-page packet this block belongs to
     block_type: str  # notion block type: paragraph, heading_1, toggle, callout, table_row...
     anchor: str  # our stable marker embedded in the HTML, survives the SuperDocs round-trip
     chunk_id: str | None = None  # SuperDocs data-chunk-id, filled after upload
@@ -80,6 +81,7 @@ class ProposedChange(BaseModel):
     id: str = Field(default_factory=lambda: _new_id("chg"))
     chunk_id: str
     notion_block_id: str
+    notion_page_id: str = ""  # the page this change writes back to (multi-page packets)
     block_type: str = "paragraph"
     job_id: str = ""  # the SuperDocs chat job that proposed this change (needed to approve it)
     operation: ChangeOperation
@@ -133,6 +135,13 @@ class ReviewRound(BaseModel):
 
     def block_for_chunk(self, chunk_id: str) -> BlockMapEntry | None:
         return next((b for b in self.block_map if b.chunk_id == chunk_id), None)
+
+    def page_ids(self) -> list[str]:
+        """Every distinct page in this review packet, in first-seen order."""
+        seen: dict[str, None] = {}
+        for entry in self.block_map:
+            seen.setdefault(entry.notion_page_id or self.notion_page_id, None)
+        return list(seen)
 
     def pending(self) -> list[ProposedChange]:
         return [p for p in self.proposals if p.status == ProposalStatus.PENDING]

@@ -7,7 +7,12 @@ against the fakes (keyless tests) and the live services.
 
 from notion_review.roundtrip.graph import InboundController, ReviewGate, build_review_graph
 from notion_review.roundtrip.inbound import MatchedEdit, match_edits
-from notion_review.roundtrip.outbound import ReviewPacket, reconcile_chunks, send_for_review
+from notion_review.roundtrip.outbound import (
+    ReviewPacket,
+    reconcile_chunks,
+    send_for_review,
+    send_packet_for_review,
+)
 
 __all__ = [
     "InboundController",
@@ -18,4 +23,5 @@ __all__ = [
     "match_edits",
     "reconcile_chunks",
     "send_for_review",
+    "send_packet_for_review",
 ]

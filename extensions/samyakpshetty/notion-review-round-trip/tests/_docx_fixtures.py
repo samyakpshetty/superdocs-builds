@@ -172,6 +172,36 @@ def moved_text_docx() -> bytes:
     return build_docx(document)
 
 
+# A packet of two pages, one paragraph each, both edited — for multi-document fan-out.
+PACKET_P1_ORIGINAL = "The alpha service handles ingestion."
+PACKET_P1_PROPOSED = "The alpha service handles ingestion and validation."
+PACKET_P2_ORIGINAL = "The beta service handles delivery."
+PACKET_P2_PROPOSED = "The beta service handles delivery and receipts."
+
+
+def packet_review_docx() -> bytes:
+    """One reviewer paragraph from each page of a two-page packet, each with a tracked insertion."""
+    date = "2026-08-12T10:00:00Z"
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p>"
+        f'<w:r><w:t xml:space="preserve">The alpha service handles ingestion</w:t></w:r>'
+        f'<w:ins w:id="1" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve"> and validation</w:t></w:r></w:ins>'
+        f'<w:r><w:t xml:space="preserve">.</w:t></w:r>'
+        f"</w:p>"
+        f"<w:p>"
+        f'<w:r><w:t xml:space="preserve">The beta service handles delivery</w:t></w:r>'
+        f'<w:ins w:id="2" w:author="{COMMENT_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve"> and receipts</w:t></w:r></w:ins>'
+        f'<w:r><w:t xml:space="preserve">.</w:t></w:r>'
+        f"</w:p>"
+        f"</w:body></w:document>"
+    )
+    return build_docx(document)
+
+
 def unchanged_docx(text: str) -> bytes:
     """A .docx with a single, unmodified paragraph — no tracked changes, no comments."""
     document = (

@@ -16,7 +16,7 @@ from notion_review.config import Config
 from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange
 from notion_review.logging import setup_logging
 from notion_review.notion.base import NotionClient
-from notion_review.roundtrip import InboundController, send_for_review
+from notion_review.roundtrip import InboundController, send_for_review, send_packet_for_review
 from notion_review.roundtrip.checkpoint import open_checkpointer
 from notion_review.roundtrip.inbound import plain_text_from_html
 from notion_review.sample import demo_page, demo_review_docx
@@ -64,13 +64,19 @@ def demo(interactive: bool) -> None:
 
 
 @main.command()
-@click.option("--page-id", required=True, help="The Notion page id to send for review.")
+@click.option(
+    "--page-id",
+    "page_ids",
+    required=True,
+    multiple=True,
+    help="A Notion page id to send for review. Repeat to send several pages as one packet.",
+)
 @click.option(
     "--out", default="review.docx", type=click.Path(), help="Where to write the Word file."
 )
 @click.option("--state", default=_STATE_DEFAULT, type=click.Path(), help="Round store file.")
-def send(page_id: str, out: str, state: str) -> None:
-    """Send a Notion page out for review; writes a Word file and records the round.
+def send(page_ids: tuple[str, ...], out: str, state: str) -> None:
+    """Send one or more Notion pages out for review; writes a Word file and records the round.
 
     Uses the live providers when PROVIDER=live, otherwise the fakes.
     """
@@ -78,10 +84,14 @@ def send(page_id: str, out: str, state: str) -> None:
     setup_logging(config.log_format)
     notion, superdocs = build_clients(config)
     store = SQLiteStore(state)
-    packet = send_for_review(notion=notion, superdocs=superdocs, store=store, page_id=page_id)
+    packet = send_packet_for_review(
+        notion=notion, superdocs=superdocs, store=store, page_ids=list(page_ids)
+    )
     Path(out).write_bytes(packet.docx.content)
     click.secho(f"Sent for review. round={packet.round.id}", fg="green", bold=True)
-    click.echo(f"  {len(packet.round.block_map)} blocks · Word file → {out}")
+    click.echo(
+        f"  {len(page_ids)} page(s) · {len(packet.round.block_map)} blocks · Word file → {out}"
+    )
     click.echo("  Mark it up in Word (tracked changes + comments), then run:")
     click.echo(f"    notion-review review --round-id {packet.round.id} --markup {out}")
 

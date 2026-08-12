@@ -7,7 +7,12 @@ from _docx_fixtures import (
     COMMENT_AUTHOR,
     DUP_MIDDLE,
     DUP_TEXT,
+    PACKET_P1_ORIGINAL,
+    PACKET_P1_PROPOSED,
+    PACKET_P2_ORIGINAL,
+    PACKET_P2_PROPOSED,
     duplicate_second_edited_docx,
+    packet_review_docx,
     reviewed_docx,
     unchanged_docx,
 )
@@ -18,7 +23,12 @@ from notion_review.notion import FakeNotionClient
 from notion_review.notion.html import blocks_to_html
 from notion_review.notion.models import Annotations, RichText, plain_text
 from notion_review.notion.tree import fetch_block_tree
-from notion_review.roundtrip import InboundController, match_edits, send_for_review
+from notion_review.roundtrip import (
+    InboundController,
+    match_edits,
+    send_for_review,
+    send_packet_for_review,
+)
 from notion_review.roundtrip.checkpoint import open_checkpointer
 from notion_review.store import SQLiteStore
 from notion_review.superdocs import FakeSuperDocsClient
@@ -165,6 +175,38 @@ def test_a_killed_review_resumes_at_the_gate_from_a_durable_checkpoint(tmp_path)
     assert final.status == RoundStatus.COMPLETED
     assert superdocs.chat_calls() == calls
     assert all(p.status == ProposalStatus.APPLIED for p in final.proposals)
+
+
+def test_multi_page_packet_fans_each_change_back_to_its_own_page() -> None:
+    notion = FakeNotionClient()
+    page1 = notion.new_page("Alpha spec")
+    block1 = notion.add(page1, "paragraph", PACKET_P1_ORIGINAL)
+    page2 = notion.new_page("Beta spec")
+    block2 = notion.add(page2, "paragraph", PACKET_P2_ORIGINAL)
+    superdocs = FakeSuperDocsClient()
+    store = SQLiteStore()
+
+    packet = send_packet_for_review(
+        notion=notion, superdocs=superdocs, store=store, page_ids=[page1, page2]
+    )
+    assert {e.notion_page_id for e in packet.round.block_map} == {page1, page2}
+
+    controller = InboundController(
+        notion=notion, superdocs=superdocs, store=store, config=Config.from_env({})
+    )
+    gate = controller.start(round_id=packet.round.id, docx_bytes=packet_review_docx())
+    assert len(gate.pending) == 2
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    final = controller.submit(round_id=packet.round.id, decisions=decisions)
+
+    assert final.status == RoundStatus.COMPLETED
+    assert notion.block_text(block1) == PACKET_P1_PROPOSED  # page 1's edit on page 1's block
+    assert notion.block_text(block2) == PACKET_P2_PROPOSED  # page 2's edit on page 2's block
+    # Attribution reached the right page, and each page carries its own completion summary.
+    assert any(CHANGE_AUTHOR in c.plain() for c in notion.comments_for(block1))
+    assert any(COMMENT_AUTHOR in c.plain() for c in notion.comments_for(block2))
+    assert any("complete" in c.plain() for c in notion.comments_for(page1))
+    assert any("complete" in c.plain() for c in notion.comments_for(page2))
 
 
 # -- the golden round-trip ----------------------------------------------------
