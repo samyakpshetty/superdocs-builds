@@ -27,7 +27,7 @@ from notion_review.domain import (
 )
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
-from notion_review.notion.models import plain_text
+from notion_review.notion.models import plain_text, splice_plain_edit
 from notion_review.superdocs.base import SuperDocsClient, SuperDocsError
 from notion_review.superdocs.instructions import build_instruction
 from notion_review.superdocs.models import Job, JobStatus
@@ -41,6 +41,12 @@ _TERMINAL = frozenset(
 
 def _norm(text: str) -> str:
     return " ".join(text.split()).strip()
+
+
+def _clip(text: str, limit: int = 120) -> str:
+    """Shorten text for a provenance comment without dropping the sense of the change."""
+    text = _norm(text)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def plain_text_from_html(html: str) -> str:
@@ -294,17 +300,22 @@ def _apply_one(round_: ReviewRound, proposal: ProposedChange, notion: NotionClie
                 )
                 return
             new_text = plain_text_from_html(proposal.new_html)
+            # Surgical write-back: keep the block's untouched runs (bold, links, colour) exactly as
+            # they were, rewriting only the span the reviewer actually changed.
             notion.update_block(
                 proposal.notion_block_id,
                 block_type=proposal.block_type,
-                rich_text=plain_text(new_text),
+                rich_text=splice_plain_edit(current.rich_text, new_text),
             )
             landed = notion.retrieve_block(proposal.notion_block_id)
             if _norm(landed.plain()) != _norm(new_text):
                 proposal.status = ProposalStatus.FAILED
                 proposal.error = "read-back mismatch: block did not reflect the change"
                 return
-            note = f"Applied {proposal.reviewer_name}'s change from review round {round_.id}."
+            note = (
+                f"Applied {proposal.reviewer_name}'s change (review round {round_.id}): "
+                f"“{_clip(as_sent)}” → “{_clip(new_text)}”"
+            )
         else:
             note = (
                 f"{proposal.reviewer_name} (review round {round_.id}): {proposal.reviewer_comment}"

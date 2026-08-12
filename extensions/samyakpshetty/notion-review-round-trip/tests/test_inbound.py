@@ -16,7 +16,7 @@ from notion_review.docx_markup import parse_docx
 from notion_review.domain import ChangeSource, ProposalStatus, RoundStatus
 from notion_review.notion import FakeNotionClient
 from notion_review.notion.html import blocks_to_html
-from notion_review.notion.models import plain_text
+from notion_review.notion.models import Annotations, RichText, plain_text
 from notion_review.notion.tree import fetch_block_tree
 from notion_review.roundtrip import InboundController, match_edits, send_for_review
 from notion_review.roundtrip.checkpoint import open_checkpointer
@@ -209,6 +209,33 @@ def test_round_reports_what_it_spent_and_where_the_time_went() -> None:
     assert {"propose", "apply"} <= set(final.stage_timings_ms)
     assert all(ms >= 0 for ms in final.stage_timings_ms.values())
     assert "SuperDocs op(s)" in final.cost_summary()
+
+
+def test_a_word_change_preserves_the_rest_of_the_blocks_formatting() -> None:
+    notion, _, store, controller, round_id = _setup()
+    round0 = store.get(round_id)
+    assert round0 is not None
+    aurora = next(e for e in round0.block_map if "Aurora ships in Q3" in e.original_text)
+
+    # Give the block real styling whose plain text still matches what was sent for review.
+    notion.update_block(
+        aurora.notion_block_id,
+        block_type="paragraph",
+        rich_text=[
+            RichText(text="Aurora ships in Q3 and targets "),
+            RichText(text="mid-market teams", annotations=Annotations(bold=True)),
+            RichText(text=" migrating off spreadsheets."),
+        ],
+    )
+
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    controller.submit(round_id=round_id, decisions=decisions)
+
+    landed = notion.retrieve_block(aurora.notion_block_id)
+    assert "Q4" in landed.plain() and "Q3" not in landed.plain()  # the edit applied
+    bold = [r for r in landed.rich_text if r.annotations.bold]
+    assert len(bold) == 1 and bold[0].text == "mid-market teams"  # styling survived surgically
 
 
 def test_rejected_change_is_never_written() -> None:

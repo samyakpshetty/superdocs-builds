@@ -103,6 +103,68 @@ def plain_text(text: str) -> list[RichText]:
 NOTION_RICH_TEXT_LIMIT = 2000
 
 
+def _slice_runs(runs: list[RichText], start: int, end: int) -> list[RichText]:
+    """Return the runs covering ``[start, end)`` in plain-text space, styling preserved."""
+    out: list[RichText] = []
+    pos = 0
+    for run in runs:
+        run_start, run_end = pos, pos + len(run.text)
+        pos = run_end
+        lo, hi = max(start, run_start), min(end, run_end)
+        if lo < hi:
+            out.append(
+                RichText(
+                    text=run.text[lo - run_start : hi - run_start],
+                    annotations=run.annotations,
+                    href=run.href,
+                )
+            )
+    return out
+
+
+def _style_at(runs: list[RichText], offset: int) -> tuple[Annotations, str | None]:
+    """The annotations/link active at a plain-text offset — used to style replacement text."""
+    pos = 0
+    for run in runs:
+        if pos <= offset < pos + len(run.text):
+            return run.annotations, run.href
+        pos += len(run.text)
+    if runs:  # offset at or past the end inherits the trailing run's style
+        return runs[-1].annotations, runs[-1].href
+    return Annotations(), None
+
+
+def splice_plain_edit(runs: list[RichText], new_plain: str) -> list[RichText]:
+    """Apply a plain-text edit to styled runs, changing only the span that actually differs.
+
+    The reviewer edited a passage; the rest of the block's formatting — bold, links, colour — must
+    survive untouched (surgical precision). We keep the common prefix and suffix as their original
+    runs and rewrite only the differing middle, styled like the text it replaces. Byte-identical
+    to a plain rewrite when the block had no styling, so the simple case stays simple.
+    """
+    old_plain = "".join(run.text for run in runs)
+    if old_plain == new_plain:
+        return list(runs)
+
+    prefix = 0
+    for a, b in zip(old_plain, new_plain, strict=False):
+        if a != b:
+            break
+        prefix += 1
+    max_suffix = min(len(old_plain), len(new_plain)) - prefix
+    suffix = 0
+    while suffix < max_suffix and old_plain[-1 - suffix] == new_plain[-1 - suffix]:
+        suffix += 1
+
+    middle = new_plain[prefix : len(new_plain) - suffix]
+    head = _slice_runs(runs, 0, prefix)
+    tail = _slice_runs(runs, len(old_plain) - suffix, len(old_plain))
+    if not middle:
+        return [*head, *tail]
+    annotations, href = _style_at(runs, prefix)
+    return [*head, RichText(text=middle, annotations=annotations, href=href), *tail]
+
+
 def split_rich_text(runs: list[RichText], limit: int = NOTION_RICH_TEXT_LIMIT) -> list[RichText]:
     """Split any run longer than ``limit`` into consecutive runs, preserving style and link.
 
