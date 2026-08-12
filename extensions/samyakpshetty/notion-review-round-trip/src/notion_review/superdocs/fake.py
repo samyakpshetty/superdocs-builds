@@ -92,6 +92,7 @@ class FakeSuperDocsClient:
         self._monthly_limit = monthly_limit
         self._monthly_used = quota_used
         self._counter = 0
+        self._chat_calls = 0
 
     # -- helpers ---------------------------------------------------------------
     def _next(self, prefix: str) -> str:
@@ -131,6 +132,7 @@ class FakeSuperDocsClient:
         document_html: str | None = None,
         approval_mode: str = "ask_every_time",
     ) -> str:
+        self._chat_calls += 1
         if document_html is not None and session_id not in self._sessions:
             self.upload_document(document_html=document_html, session_id=session_id)
         session = self._sessions.get(session_id)
@@ -245,6 +247,10 @@ class FakeSuperDocsClient:
     # -- test/introspection helpers (not part of the wire contract) ------------
     def monthly_used(self) -> int:
         return self._monthly_used
+
+    def chat_calls(self) -> int:
+        """How many times ``chat_async`` was invoked — lets tests prove idempotent re-runs."""
+        return self._chat_calls
 
     def session_html(self, session_id: str) -> str:
         session = self._sessions.get(session_id)

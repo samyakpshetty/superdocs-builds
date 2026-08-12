@@ -152,6 +152,7 @@ def _print_outcome(proposals: list[ProposedChange], notion: NotionClient) -> Non
         icon = {
             ProposalStatus.APPLIED: "✓ applied",
             ProposalStatus.REJECTED: "✗ rejected",
+            ProposalStatus.CONFLICT: "⚠ conflict (page changed)",
             ProposalStatus.FAILED: "! failed",
         }.get(proposal.status, proposal.status.value)
         block = notion.retrieve_block(proposal.notion_block_id)

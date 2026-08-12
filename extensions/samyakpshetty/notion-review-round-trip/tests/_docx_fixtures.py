@@ -99,6 +99,31 @@ def reviewed_docx() -> bytes:
     return build_docx(_document_xml(), _comments_xml())
 
 
+# Two identical paragraphs where only the SECOND is edited — for positional matching.
+DUP_TEXT = "Repeat me exactly."
+DUP_MIDDLE = "A different middle line."
+DUP_INSERT = " (edited by the reviewer)"
+
+
+def duplicate_second_edited_docx() -> bytes:
+    """Three paragraphs — two identical, a middle one — with a tracked change on the second copy."""
+    date = "2026-08-12T10:00:00Z"
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p><w:r><w:t>{DUP_TEXT}</w:t></w:r></w:p>"
+        f"<w:p><w:r><w:t>{DUP_MIDDLE}</w:t></w:r></w:p>"
+        f"<w:p>"
+        f'<w:r><w:t xml:space="preserve">{DUP_TEXT}</w:t></w:r>'
+        f'<w:ins w:id="1" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve">{DUP_INSERT}</w:t></w:r>'
+        f"</w:ins>"
+        f"</w:p>"
+        f"</w:body></w:document>"
+    )
+    return build_docx(document)
+
+
 def unchanged_docx(text: str) -> bytes:
     """A .docx with a single, unmodified paragraph — no tracked changes, no comments."""
     document = (

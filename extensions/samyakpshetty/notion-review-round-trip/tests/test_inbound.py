@@ -5,6 +5,9 @@ from __future__ import annotations
 from _docx_fixtures import (
     CHANGE_AUTHOR,
     COMMENT_AUTHOR,
+    DUP_MIDDLE,
+    DUP_TEXT,
+    duplicate_second_edited_docx,
     reviewed_docx,
     unchanged_docx,
 )
@@ -13,6 +16,7 @@ from notion_review.docx_markup import parse_docx
 from notion_review.domain import ChangeSource, ProposalStatus, RoundStatus
 from notion_review.notion import FakeNotionClient
 from notion_review.notion.html import blocks_to_html
+from notion_review.notion.models import plain_text
 from notion_review.notion.tree import fetch_block_tree
 from notion_review.roundtrip import InboundController, match_edits, send_for_review
 from notion_review.store import SQLiteStore
@@ -48,6 +52,81 @@ def test_match_edits_ties_changes_to_blocks() -> None:
     assert "Q4" in text_change.proposed_text and text_change.reviewer == CHANGE_AUTHOR
     comment_edit = next(m for m in matched if not m.is_text_change)
     assert comment_edit.comment and comment_edit.reviewer == COMMENT_AUTHOR
+
+
+def test_edit_to_the_second_of_two_identical_blocks_lands_on_the_second() -> None:
+    # A page with two byte-identical paragraphs; the reviewer edits the second. Matching by text
+    # alone would collapse both onto the first block — positional matching must not.
+    notion = FakeNotionClient()
+    page_id = notion.new_page("Duplicates")
+    first = notion.add(page_id, "paragraph", DUP_TEXT)
+    notion.add(page_id, "paragraph", DUP_MIDDLE)
+    second = notion.add(page_id, "paragraph", DUP_TEXT)
+
+    _, block_map = blocks_to_html(fetch_block_tree(notion, page_id))
+    markup = parse_docx(duplicate_second_edited_docx())
+    matched, unmatched = match_edits(markup, block_map)
+
+    assert unmatched == []
+    assert len(matched) == 1
+    assert matched[0].notion_block_id == second  # the second copy, never the first
+    assert matched[0].notion_block_id != first
+
+
+def test_more_same_text_changes_than_blocks_are_surfaced_not_guessed() -> None:
+    # One block, but two identical-text paragraphs both edited: the extra change has no block to
+    # land on and must be surfaced, never applied to a guessed target.
+    notion = FakeNotionClient()
+    page_id = notion.new_page("Ambiguous")
+    notion.add(page_id, "paragraph", DUP_TEXT)  # a single block with this text
+    notion.add(page_id, "paragraph", DUP_MIDDLE)
+    _, block_map = blocks_to_html(fetch_block_tree(notion, page_id))
+
+    markup = parse_docx(duplicate_second_edited_docx())  # two paragraphs carry DUP_TEXT
+    matched, unmatched = match_edits(markup, block_map)
+
+    assert len(matched) == 0  # the sole edit is on the second copy, which has no block
+    assert unmatched == [DUP_TEXT]
+
+
+def test_drift_in_notion_is_a_conflict_not_a_silent_overwrite() -> None:
+    notion, _, store, controller, round_id = _setup()
+    round0 = store.get(round_id)
+    assert round0 is not None
+    aurora = next(e for e in round0.block_map if "Aurora ships in Q3" in e.original_text)
+
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    # Someone edits the page in Notion while it is out for review.
+    drifted = "Aurora ships in Q3 — but the scope changed materially after this went out."
+    notion.update_block(
+        aurora.notion_block_id, block_type="paragraph", rich_text=plain_text(drifted)
+    )
+
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    final = controller.submit(round_id=round_id, decisions=decisions)
+
+    text_change = next(p for p in final.proposals if p.source == ChangeSource.TRACKED_CHANGE)
+    assert text_change.status == ProposalStatus.CONFLICT
+    # The newer Notion edit is preserved; the stale reviewer change never landed.
+    assert notion.block_text(aurora.notion_block_id) == drifted
+    assert "Q4" not in notion.block_text(aurora.notion_block_id)
+
+
+def test_reproposing_a_persisted_round_never_respends_ops() -> None:
+    notion, superdocs, store, controller, round_id = _setup()
+    controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    after_first = superdocs.chat_calls()
+    assert after_first >= 1
+
+    # Simulate a crash/restart: a brand-new controller (fresh graph + checkpointer) re-enters the
+    # same persisted round. The already-proposed changes must not be sent to SuperDocs again.
+    controller2 = InboundController(
+        notion=notion, superdocs=superdocs, store=store, config=Config.from_env({})
+    )
+    gate = controller2.start(round_id=round_id, docx_bytes=reviewed_docx())
+
+    assert superdocs.chat_calls() == after_first  # zero ops re-spent
+    assert len(gate.pending) == 2  # the same proposals are still awaiting approval
 
 
 # -- the golden round-trip ----------------------------------------------------

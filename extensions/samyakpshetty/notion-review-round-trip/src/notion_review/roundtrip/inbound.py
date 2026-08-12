@@ -68,20 +68,38 @@ def match_edits(
 ) -> tuple[list[MatchedEdit], list[str]]:
     """Match each changed paragraph to its block by the as-sent text.
 
-    Returns the matched edits and the texts of any changes we could not locate — surfaced,
-    never silently dropped.
+    Matching is positional within a text: the *n*-th block carrying a given as-sent text pairs
+    with the *n*-th same-text paragraph, in document order. A page with two identical paragraphs
+    therefore no longer collapses both edits onto the first block — an edit to the second lands
+    on the second. When a change cannot be located (unknown text, or more same-text paragraphs
+    than blocks), it is surfaced in the unmatched list, never applied to a guessed block.
+
+    Returns the matched edits and the texts of any changes we could not locate.
     """
-    by_text: dict[str, BlockMapEntry] = {}
+    # Group block-map entries by as-sent text, preserving document order.
+    entries_by_text: dict[str, list[BlockMapEntry]] = {}
     for entry in block_map:
-        by_text.setdefault(_norm(entry.original_text), entry)
+        entries_by_text.setdefault(_norm(entry.original_text), []).append(entry)
+
+    # Occurrence ordinal of every paragraph among all same-text paragraphs, in document order.
+    # Counting over *all* paragraphs (not just changed ones) is what lets an edit to the second
+    # of two identical blocks resolve to the second block rather than the first.
+    occurrence: dict[int, int] = {}
+    seen: dict[str, int] = {}
+    for para in markup.paragraphs:
+        key = _norm(para.original_text)
+        occurrence[para.index] = seen.get(key, 0)
+        seen[key] = occurrence[para.index] + 1
 
     matched: list[MatchedEdit] = []
     unmatched: list[str] = []
     for para in markup.changes():
-        hit = by_text.get(_norm(para.original_text))
-        if hit is None:
-            unmatched.append(para.original_text)
+        entries = entries_by_text.get(_norm(para.original_text), [])
+        ordinal = occurrence[para.index]
+        if ordinal >= len(entries):
+            unmatched.append(para.original_text)  # unlocatable or ambiguous — surfaced, not guessed
             continue
+        hit = entries[ordinal]
         reviewer = _reviewer_of(para.authors, para.comments)
         matched.append(
             MatchedEdit(
@@ -125,7 +143,7 @@ def propose_changes(
         if edit.is_text_change:
             # SuperDocs locates the chunk by content and returns its own chunk id, so a
             # pre-mapped chunk id is not required — the returned diff carries the id we approve.
-            proposal = _propose_text_change(round_, superdocs, edit, config)
+            proposal = _propose_text_change(round_, superdocs, edit, config, existing_keys)
             if round_.status == RoundStatus.PARKED:  # circuit-breaker tripped mid-propose
                 break
         elif edit.comment:
@@ -144,7 +162,24 @@ def _propose_text_change(
     superdocs: SuperDocsClient,
     edit: MatchedEdit,
     config: Config,
+    existing_keys: set[str],
 ) -> ProposedChange | None:
+    proposal = ProposedChange(
+        chunk_id="",
+        notion_block_id=edit.notion_block_id,
+        block_type=edit.block_type,
+        operation=ChangeOperation.REPLACE,
+        old_html=f"<p>{escape(edit.original_text)}</p>",
+        new_html=f"<p>{escape(edit.proposed_text)}</p>",
+        source=ChangeSource.TRACKED_CHANGE,
+        reviewer_name=edit.reviewer,
+        reviewer_comment=edit.comment,
+    )
+    # Idempotency where it costs money: an identical change was already proposed on an earlier
+    # (interrupted) run, so skip the SuperDocs call entirely — a re-run re-spends zero ops.
+    if proposal.content_key() in existing_keys:
+        return None
+
     # Ask SuperDocs to apply the edit — this exercises its edit engine and keeps its copy of
     # the document in sync. It is best-effort: a reviewer's tracked change already carries the
     # exact result, and that reviewer-authoritative text is what we write back to the host, so a
@@ -156,31 +191,18 @@ def _propose_text_change(
         reviewer=edit.reviewer,
         comment=edit.comment,
     )
-    job_id = ""
     try:
-        job_id = superdocs.chat_async(session_id=round_.session_id, message=instruction)
-        job = _poll_job(superdocs, job_id, config)
+        proposal.job_id = superdocs.chat_async(session_id=round_.session_id, message=instruction)
+        job = _poll_job(superdocs, proposal.job_id, config)
         if job.usage is not None:
             round_.ops_spent += job.usage.ops_charged
             if job.usage.quota_exhausted:
                 round_.status = RoundStatus.PARKED
                 _log.warning("quota_exhausted", extra={"round_id": round_.id})
-                return None
     except SuperDocsError as exc:
         _log.warning("superdocs_chat_failed", extra={"round_id": round_.id, "error": str(exc)})
 
-    return ProposedChange(
-        chunk_id="",
-        notion_block_id=edit.notion_block_id,
-        block_type=edit.block_type,
-        job_id=job_id,
-        operation=ChangeOperation.REPLACE,
-        old_html=f"<p>{escape(edit.original_text)}</p>",
-        new_html=f"<p>{escape(edit.proposed_text)}</p>",
-        source=ChangeSource.TRACKED_CHANGE,
-        reviewer_name=edit.reviewer,
-        reviewer_comment=edit.comment,
-    )
+    return proposal
 
 
 def _comment_proposal(edit: MatchedEdit) -> ProposedChange:
@@ -240,12 +262,14 @@ def apply_decisions(
     # Close the loop on the page: a durable record of the review round and its outcome.
     applied = sum(1 for p in round_.proposals if p.status == ProposalStatus.APPLIED)
     rejected = sum(1 for p in round_.proposals if p.status == ProposalStatus.REJECTED)
+    conflicts = sum(1 for p in round_.proposals if p.status == ProposalStatus.CONFLICT)
+    summary = f"Review round {round_.id} complete — {applied} applied, {rejected} rejected"
+    if conflicts:
+        summary += f", {conflicts} skipped (page changed since review)"
     try:
         notion.create_comment(
             page_id=round_.notion_page_id,
-            rich_text=plain_text(
-                f"Review round {round_.id} complete — {applied} applied, {rejected} rejected."
-            ),
+            rich_text=plain_text(f"{summary}."),
         )
     except NotionError as exc:
         _log.warning("summary_comment_failed", extra={"round_id": round_.id, "error": str(exc)})
@@ -256,6 +280,19 @@ def _apply_one(round_: ReviewRound, proposal: ProposedChange, notion: NotionClie
         return  # idempotent: already written on an earlier (interrupted) run
     try:
         if proposal.source == ChangeSource.TRACKED_CHANGE:
+            # Drift guard: the reviewer marked up the text we sent. If the Notion block changed
+            # since then (someone edited the page while it was out for review), overwriting would
+            # silently discard that newer edit. Surface the conflict instead — never clobber.
+            as_sent = plain_text_from_html(proposal.old_html)
+            current = notion.retrieve_block(proposal.notion_block_id)
+            if _norm(current.plain()) != _norm(as_sent):
+                proposal.status = ProposalStatus.CONFLICT
+                proposal.error = "block changed in Notion since review; not overwritten"
+                _log.warning(
+                    "drift_conflict",
+                    extra={"round_id": round_.id, "proposal_id": proposal.id},
+                )
+                return
             new_text = plain_text_from_html(proposal.new_html)
             notion.update_block(
                 proposal.notion_block_id,
