@@ -17,6 +17,7 @@ from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange
 from notion_review.logging import setup_logging
 from notion_review.notion.base import NotionClient
 from notion_review.roundtrip import InboundController, send_for_review
+from notion_review.roundtrip.checkpoint import open_checkpointer
 from notion_review.roundtrip.inbound import plain_text_from_html
 from notion_review.sample import demo_page, demo_review_docx
 from notion_review.store import SQLiteStore
@@ -58,7 +59,8 @@ def demo(interactive: bool) -> None:
     click.secho("3. Applying the approved changes to Notion…", fg="cyan", bold=True)
     final = controller.submit(round_id=packet.round.id, decisions=decisions)
     _print_outcome(final.proposals, notion)
-    click.secho(f"\nRound {final.id} finished: {final.status.value}.", fg="green", bold=True)
+    click.echo(f"\n   cost: {final.cost_summary()}")
+    click.secho(f"Round {final.id} finished: {final.status.value}.", fg="green", bold=True)
 
 
 @main.command()
@@ -95,14 +97,23 @@ def review(round_id: str, markup: str, state: str, interactive: bool) -> None:
     setup_logging(config.log_format)
     notion, superdocs = build_clients(config)
     store = SQLiteStore(state)
-    controller = InboundController(notion=notion, superdocs=superdocs, store=store, config=config)
+    # A durable graph checkpoint beside the state file: if this command is killed at the gate,
+    # a re-run resumes there instead of re-proposing (and so never re-spends an operation).
+    controller = InboundController(
+        notion=notion,
+        superdocs=superdocs,
+        store=store,
+        config=config,
+        checkpointer=open_checkpointer(f"{state}.ckpt"),
+    )
     gate = controller.start(round_id=round_id, docx_bytes=Path(markup).read_bytes())
     click.echo(f"{len(gate.pending)} change(s) proposed.\n")
     decisions = _collect_decisions(gate.pending, interactive=interactive)
     click.secho("Applying the approved changes to Notion…", fg="cyan", bold=True)
     final = controller.submit(round_id=round_id, decisions=decisions)
     _print_outcome(final.proposals, notion)
-    click.secho(f"\nRound {final.id} finished: {final.status.value}.", fg="green", bold=True)
+    click.echo(f"\n   cost: {final.cost_summary()}")
+    click.secho(f"Round {final.id} finished: {final.status.value}.", fg="green", bold=True)
 
 
 @main.command()

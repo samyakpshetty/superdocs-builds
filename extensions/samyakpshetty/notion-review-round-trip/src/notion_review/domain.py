@@ -112,6 +112,7 @@ class ReviewRound(BaseModel):
     status: RoundStatus = RoundStatus.CREATED
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
+    version: int = 1  # optimistic-concurrency guard: a stale write is rejected, never lost
 
     sent_version_id: str | None = None  # SuperDocs version exported to Word
     block_map: list[BlockMapEntry] = Field(default_factory=list)
@@ -119,9 +120,16 @@ class ReviewRound(BaseModel):
 
     ops_spent: int = 0  # SuperDocs operations consumed by this round
     review_url: str | None = None  # link recorded back on the Notion page
+    stage_timings_ms: dict[str, float] = Field(default_factory=dict)  # where the time went
 
     def touch(self) -> None:
         self.updated_at = _now()
+
+    def cost_summary(self) -> str:
+        """A one-line account of what the round spent and where the time went (behaviour 10)."""
+        stages = ", ".join(f"{name} {ms:.0f}ms" for name, ms in self.stage_timings_ms.items())
+        ops = f"{self.ops_spent} SuperDocs op(s)"
+        return f"{ops}; {stages}" if stages else ops
 
     def block_for_chunk(self, chunk_id: str) -> BlockMapEntry | None:
         return next((b for b in self.block_map if b.chunk_id == chunk_id), None)

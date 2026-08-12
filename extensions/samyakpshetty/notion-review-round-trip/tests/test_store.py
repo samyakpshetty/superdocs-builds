@@ -13,7 +13,7 @@ from notion_review.domain import (
     ReviewRound,
     RoundStatus,
 )
-from notion_review.store import PostgresStore, SQLiteStore, Store, open_store
+from notion_review.store import PostgresStore, RoundConflictError, SQLiteStore, Store, open_store
 
 
 def _sample_round() -> ReviewRound:
@@ -117,6 +117,29 @@ def test_concurrent_rounds_stay_isolated() -> None:
 
     assert not errors
     assert len(store.list_ids()) == 100
+    store.close()
+
+
+def test_a_stale_write_to_one_round_is_rejected_not_lost() -> None:
+    # Two workers read the same round, then both try to write it. The first wins; the second is
+    # working from a stale copy and must be refused rather than silently clobbering the first.
+    store = SQLiteStore()
+    rnd = _sample_round()
+    store.save(rnd)
+
+    first = store.get(rnd.id)
+    second = store.get(rnd.id)
+    assert first is not None and second is not None
+
+    first.status = RoundStatus.APPLYING
+    store.save(first)  # wins
+
+    second.status = RoundStatus.FAILED
+    with pytest.raises(RoundConflictError):
+        store.save(second)  # stale — refused
+
+    winner = store.get(rnd.id)
+    assert winner is not None and winner.status == RoundStatus.APPLYING  # first writer's value
     store.close()
 
 

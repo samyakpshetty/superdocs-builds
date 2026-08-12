@@ -19,6 +19,7 @@ from notion_review.notion.html import blocks_to_html
 from notion_review.notion.models import plain_text
 from notion_review.notion.tree import fetch_block_tree
 from notion_review.roundtrip import InboundController, match_edits, send_for_review
+from notion_review.roundtrip.checkpoint import open_checkpointer
 from notion_review.store import SQLiteStore
 from notion_review.superdocs import FakeSuperDocsClient
 
@@ -129,6 +130,43 @@ def test_reproposing_a_persisted_round_never_respends_ops() -> None:
     assert len(gate.pending) == 2  # the same proposals are still awaiting approval
 
 
+def test_a_killed_review_resumes_at_the_gate_from_a_durable_checkpoint(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    notion, page_id = FakeNotionClient.build_sample()
+    superdocs = FakeSuperDocsClient()
+    store = SQLiteStore(str(tmp_path / "state.db"))
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    ckpt = str(tmp_path / "graph.ckpt")
+
+    # First run: propose to the gate, then "crash" — drop the controller entirely.
+    first = InboundController(
+        notion=notion,
+        superdocs=superdocs,
+        store=store,
+        config=Config.from_env({}),
+        checkpointer=open_checkpointer(ckpt),
+    )
+    gate = first.start(round_id=round_id, docx_bytes=reviewed_docx())
+    assert len(gate.pending) == 2
+    calls = superdocs.chat_calls()
+
+    # Restart: a fresh controller on the same checkpoint file resumes and applies the decisions,
+    # without re-running propose (no SuperDocs op is re-spent).
+    resumed = InboundController(
+        notion=notion,
+        superdocs=superdocs,
+        store=store,
+        config=Config.from_env({}),
+        checkpointer=open_checkpointer(ckpt),
+    )
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    final = resumed.submit(round_id=round_id, decisions=decisions)
+
+    assert final.status == RoundStatus.COMPLETED
+    assert superdocs.chat_calls() == calls
+    assert all(p.status == ProposalStatus.APPLIED for p in final.proposals)
+
+
 # -- the golden round-trip ----------------------------------------------------
 def test_full_round_trip_applies_approved_changes_and_preserves_the_rest() -> None:
     notion, _, store, controller, round_id = _setup()
@@ -159,6 +197,18 @@ def test_full_round_trip_applies_approved_changes_and_preserves_the_rest() -> No
     )
     assert any(COMMENT_AUTHOR in c.plain() for c in notion.comments_for(ingestion.notion_block_id))
     assert all(p.status == ProposalStatus.APPLIED for p in final.proposals)
+
+
+def test_round_reports_what_it_spent_and_where_the_time_went() -> None:
+    _, _, _, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    final = controller.submit(round_id=round_id, decisions=decisions)
+
+    assert final.ops_spent == 1  # one text edit is one op; the comment costs nothing
+    assert {"propose", "apply"} <= set(final.stage_timings_ms)
+    assert all(ms >= 0 for ms in final.stage_timings_ms.values())
+    assert "SuperDocs op(s)" in final.cost_summary()
 
 
 def test_rejected_change_is_never_written() -> None:

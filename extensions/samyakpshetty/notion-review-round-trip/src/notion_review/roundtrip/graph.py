@@ -12,6 +12,7 @@ Path-changing decisions live in ``_route_after_propose``: nothing to review, or 
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
@@ -71,7 +72,9 @@ def build_review_graph(
         round_ = _load(store, state["round_id"])
         round_.status = RoundStatus.INGESTING
         edits = [MatchedEdit.model_validate(m) for m in state.get("matched", [])]
+        started = time.perf_counter()
         propose_changes(round_, superdocs, edits, config)
+        round_.stage_timings_ms["propose"] = (time.perf_counter() - started) * 1000
         if round_.status != RoundStatus.PARKED and round_.pending():
             round_.status = RoundStatus.AWAITING_APPROVAL
         store.save(round_)
@@ -96,7 +99,9 @@ def build_review_graph(
 
     def apply(state: ReviewState) -> ReviewState:
         round_ = _load(store, state["round_id"])
+        started = time.perf_counter()
         apply_decisions(round_, state.get("decisions", []), notion)
+        round_.stage_timings_ms["apply"] = (time.perf_counter() - started) * 1000
         store.save(round_)
         _log.info(
             "changes_applied",
@@ -154,8 +159,14 @@ class InboundController:
         )
 
     def start(self, *, round_id: str, docx_bytes: bytes) -> ReviewGate:
-        """Parse the returned markup, propose each change, and pause at the approval gate."""
+        """Parse the returned markup, propose each change, and pause at the approval gate.
+
+        Idempotent: a round already at the gate (proposed on an earlier, interrupted run) resumes
+        there without re-parsing or re-proposing, so a restart never repeats the SuperDocs calls.
+        """
         round_ = _load(self._store, round_id)
+        if round_.status == RoundStatus.AWAITING_APPROVAL and round_.proposals:
+            return ReviewGate(round=round_, pending=round_.pending())
         markup = parse_docx(docx_bytes)
         matched, unmatched = match_edits(markup, round_.block_map)
         if unmatched:

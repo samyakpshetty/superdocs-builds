@@ -21,10 +21,19 @@ CREATE TABLE IF NOT EXISTS review_rounds (
     id             TEXT PRIMARY KEY,
     notion_page_id TEXT NOT NULL,
     status         TEXT NOT NULL,
+    version        INTEGER NOT NULL DEFAULT 1,
     updated_at     TEXT NOT NULL,
     data           {json_type} NOT NULL
 )
 """
+
+
+class RoundConflictError(RuntimeError):
+    """A round was written from a stale copy — another worker updated it first.
+
+    The write is refused rather than silently overwriting the other worker's update, so
+    concurrent work on one round can never corrupt or lose state.
+    """
 
 
 @runtime_checkable
@@ -52,24 +61,58 @@ class SQLiteStore:
         if path != ":memory:":
             self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(_DDL.format(json_type="TEXT"))
+        # Migrate a store created before the version column existed.
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(review_rounds)")}
+        if "version" not in columns:
+            self._conn.execute(
+                "ALTER TABLE review_rounds ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
+            )
         self._conn.commit()
 
     def save(self, round_: ReviewRound) -> None:
         round_.touch()
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO review_rounds (id, notion_page_id, status, updated_at, data) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET "
-                "status=excluded.status, updated_at=excluded.updated_at, data=excluded.data",
-                (
-                    round_.id,
-                    round_.notion_page_id,
-                    round_.status.value,
-                    round_.updated_at.isoformat(),
-                    round_.model_dump_json(),
-                ),
-            )
+            row = self._conn.execute(
+                "SELECT version FROM review_rounds WHERE id = ?", (round_.id,)
+            ).fetchone()
+            if row is None:
+                round_.version = 1
+                self._conn.execute(
+                    "INSERT INTO review_rounds "
+                    "(id, notion_page_id, status, version, updated_at, data) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        round_.id,
+                        round_.notion_page_id,
+                        round_.status.value,
+                        round_.version,
+                        round_.updated_at.isoformat(),
+                        round_.model_dump_json(),
+                    ),
+                )
+            else:
+                if row["version"] != round_.version:
+                    raise RoundConflictError(
+                        f"round {round_.id} changed underneath this write "
+                        f"(expected v{round_.version}, found v{row['version']})"
+                    )
+                expected = round_.version
+                round_.version = expected + 1
+                cursor = self._conn.execute(
+                    "UPDATE review_rounds "
+                    "SET status=?, version=?, updated_at=?, data=? WHERE id=? AND version=?",
+                    (
+                        round_.status.value,
+                        round_.version,
+                        round_.updated_at.isoformat(),
+                        round_.model_dump_json(),
+                        round_.id,
+                        expected,
+                    ),
+                )
+                if cursor.rowcount != 1:  # lost the race between SELECT and UPDATE
+                    round_.version = expected
+                    raise RoundConflictError(f"round {round_.id} changed underneath this write")
             self._conn.commit()
 
     def get(self, round_id: str) -> ReviewRound | None:
@@ -103,23 +146,55 @@ class PostgresStore:
         self._pool = ConnectionPool(dsn, min_size=1, max_size=8, open=True)
         with self._pool.connection() as conn:
             conn.execute(_DDL.format(json_type="JSONB"))
+            conn.execute(
+                "ALTER TABLE review_rounds ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL "
+                "DEFAULT 1"
+            )
 
     def save(self, round_: ReviewRound) -> None:
         round_.touch()
         with self._pool.connection() as conn:
-            conn.execute(
-                "INSERT INTO review_rounds (id, notion_page_id, status, updated_at, data) "
-                "VALUES (%s, %s, %s, %s, %s) "
-                "ON CONFLICT (id) DO UPDATE SET "
-                "status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, data = EXCLUDED.data",
+            row = conn.execute(
+                "SELECT version FROM review_rounds WHERE id = %s", (round_.id,)
+            ).fetchone()
+            if row is None:
+                round_.version = 1
+                conn.execute(
+                    "INSERT INTO review_rounds "
+                    "(id, notion_page_id, status, version, updated_at, data) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (
+                        round_.id,
+                        round_.notion_page_id,
+                        round_.status.value,
+                        round_.version,
+                        round_.updated_at.isoformat(),
+                        round_.model_dump_json(),
+                    ),
+                )
+                return
+            if row[0] != round_.version:
+                raise RoundConflictError(
+                    f"round {round_.id} changed underneath this write "
+                    f"(expected v{round_.version}, found v{row[0]})"
+                )
+            expected = round_.version
+            round_.version = expected + 1
+            cursor = conn.execute(
+                "UPDATE review_rounds "
+                "SET status=%s, version=%s, updated_at=%s, data=%s WHERE id=%s AND version=%s",
                 (
-                    round_.id,
-                    round_.notion_page_id,
                     round_.status.value,
+                    round_.version,
                     round_.updated_at.isoformat(),
                     round_.model_dump_json(),
+                    round_.id,
+                    expected,
                 ),
             )
+            if cursor.rowcount != 1:
+                round_.version = expected
+                raise RoundConflictError(f"round {round_.id} changed underneath this write")
 
     def get(self, round_id: str) -> ReviewRound | None:
         with self._pool.connection() as conn:
