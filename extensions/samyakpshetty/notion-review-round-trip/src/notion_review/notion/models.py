@@ -99,5 +99,32 @@ def plain_text(text: str) -> list[RichText]:
     return [RichText(text=text)]
 
 
+# Notion rejects any single rich-text object whose content exceeds 2000 characters.
+NOTION_RICH_TEXT_LIMIT = 2000
+
+
+def split_rich_text(runs: list[RichText], limit: int = NOTION_RICH_TEXT_LIMIT) -> list[RichText]:
+    """Split any run longer than ``limit`` into consecutive runs, preserving style and link.
+
+    Notion caps a rich-text object's content length; a long paragraph would otherwise be rejected
+    on write-back. Splitting keeps each run within the cap while the concatenated text — and every
+    run's annotations and href — is byte-identical to the input.
+    """
+    out: list[RichText] = []
+    for run in runs:
+        if len(run.text) <= limit:
+            out.append(run)
+            continue
+        for start in range(0, len(run.text), limit):
+            out.append(
+                RichText(
+                    text=run.text[start : start + limit],
+                    annotations=run.annotations,
+                    href=run.href,
+                )
+            )
+    return out
+
+
 # Block references itself via ``children``; finalise the forward reference.
 Block.model_rebuild()

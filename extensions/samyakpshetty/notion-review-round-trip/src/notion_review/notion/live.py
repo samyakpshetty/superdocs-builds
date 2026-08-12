@@ -23,6 +23,7 @@ from notion_review.notion.models import (
     Comment,
     Page,
     RichText,
+    split_rich_text,
 )
 
 _log = get_logger("notion_review.notion.live")
@@ -96,7 +97,9 @@ class LiveNotionClient:
         )
 
     def update_block(self, block_id: str, *, block_type: str, rich_text: list[RichText]) -> Block:
-        payload = {block_type: {"rich_text": [rich_to_json(rt) for rt in rich_text]}}
+        # Split any over-long run: Notion rejects a rich-text object past 2000 characters.
+        runs = split_rich_text(rich_text)
+        payload = {block_type: {"rich_text": [rich_to_json(rt) for rt in runs]}}
         return block_from_json(
             self._request("PATCH", f"/v1/blocks/{block_id}", json=payload).json()
         )
