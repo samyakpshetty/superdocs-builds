@@ -31,6 +31,15 @@ class ParsedInstruction:
     replace_text: str
 
 
+@dataclass(frozen=True)
+class EditSpec:
+    """One scoped edit to carry in a batched instruction."""
+
+    operation: ChangeOperation
+    find_text: str
+    replace_text: str
+
+
 def _sanitize(text: str) -> str:
     """Neutralise reviewer-controlled text: it is data, never control.
 
@@ -42,6 +51,18 @@ def _sanitize(text: str) -> str:
     return text.replace("<<<", "").replace(">>>", "")[:_MAX_FIELD]
 
 
+def _edit_block(spec: EditSpec) -> list[str]:
+    return [
+        _OP,
+        spec.operation.value,
+        _FIND,
+        _sanitize(spec.find_text),
+        _REPLACE,
+        _sanitize(spec.replace_text),
+        _END,
+    ]
+
+
 def build_instruction(
     *,
     operation: ChangeOperation,
@@ -50,7 +71,7 @@ def build_instruction(
     reviewer: str,
     comment: str = "",
 ) -> str:
-    """Render a scoped edit instruction for SuperDocs. Reviewer-supplied text is sanitised."""
+    """Render a single scoped edit instruction for SuperDocs. Reviewer text is sanitised."""
     lines = [
         "Apply one reviewer edit to this document. Change ONLY the passage marked FIND and "
         "leave every other part of the document exactly as it is.",
@@ -59,39 +80,55 @@ def build_instruction(
     ]
     if comment:
         lines.append(f"Reviewer note: {_sanitize(comment)}")
-    lines += [
-        "",
-        _OP,
-        operation.value,
-        _FIND,
-        _sanitize(find_text),
-        _REPLACE,
-        _sanitize(replace_text),
-        _END,
-    ]
+    lines += ["", *_edit_block(EditSpec(operation, find_text, replace_text))]
     return "\n".join(lines)
 
 
-def _between(text: str, start: str, end: str) -> str | None:
-    i = text.find(start)
-    if i == -1:
-        return None
-    i += len(start)
-    j = text.find(end, i)
-    if j == -1:
-        return None
-    return text[i:j].strip("\n")
+def build_batch_instruction(edits: list[EditSpec]) -> str:
+    """Render several scoped edits as one instruction — one request, one operation.
+
+    SuperDocs bills one operation per request (up to 25 sections), so a round's edits go out
+    together rather than one chat per change: fewer operations, fewer round-trips, one failure
+    surface. Each block stays independently scoped, so a hostile passage still can't widen an edit.
+    """
+    lines = [
+        f"Apply these {len(edits)} reviewer edits to this document. For each, change ONLY the "
+        "passage marked FIND and leave every other part of the document exactly as it is.",
+        "",
+    ]
+    for spec in edits:
+        lines += _edit_block(spec)
+    return "\n".join(lines)
+
+
+def parse_instructions(message: str) -> list[ParsedInstruction]:
+    """Reverse :func:`build_instruction` / :func:`build_batch_instruction` — every edit block."""
+    out: list[ParsedInstruction] = []
+    cursor = 0
+    while True:
+        i_op = message.find(_OP, cursor)
+        if i_op == -1:
+            break
+        i_find = message.find(_FIND, i_op + len(_OP))
+        i_repl = message.find(_REPLACE, i_find + len(_FIND)) if i_find != -1 else -1
+        i_end = message.find(_END, i_repl + len(_REPLACE)) if i_repl != -1 else -1
+        if -1 in (i_find, i_repl, i_end):
+            break
+        op_raw = message[i_op + len(_OP) : i_find].strip()
+        find_text = message[i_find + len(_FIND) : i_repl].strip("\n")
+        replace_text = message[i_repl + len(_REPLACE) : i_end].strip("\n")
+        cursor = i_end + len(_END)
+        try:
+            operation = ChangeOperation(op_raw)
+        except ValueError:
+            continue
+        out.append(
+            ParsedInstruction(operation=operation, find_text=find_text, replace_text=replace_text)
+        )
+    return out
 
 
 def parse_instruction(message: str) -> ParsedInstruction | None:
-    """Reverse :func:`build_instruction`. Returns None if the message is not our contract."""
-    op_raw = _between(message, _OP, _FIND)
-    find_text = _between(message, _FIND, _REPLACE)
-    replace_text = _between(message, _REPLACE, _END)
-    if op_raw is None or find_text is None or replace_text is None:
-        return None
-    try:
-        operation = ChangeOperation(op_raw.strip())
-    except ValueError:
-        return None
-    return ParsedInstruction(operation=operation, find_text=find_text, replace_text=replace_text)
+    """The first edit in a message, or None. Kept for the single-edit call sites."""
+    parsed = parse_instructions(message)
+    return parsed[0] if parsed else None

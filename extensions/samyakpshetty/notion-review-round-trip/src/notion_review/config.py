@@ -59,6 +59,9 @@ class Config(BaseModel):
 
     # --- Resilience knobs ---
     superdocs_max_retries: int = Field(default=5, ge=0)
+    # Re-submit a chat whose job comes back failed with a transient "engine at capacity" error —
+    # the error itself says to re-submit. Bounded; then the round degrades gracefully.
+    superdocs_chat_retries: int = Field(default=3, ge=0)
     superdocs_backoff_base_s: float = Field(default=0.5, gt=0)
     superdocs_poll_timeout_s: float = Field(default=600.0, gt=0)
     superdocs_poll_interval_s: float = Field(default=2.0, gt=0)

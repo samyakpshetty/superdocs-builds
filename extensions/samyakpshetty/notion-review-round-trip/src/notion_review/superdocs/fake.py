@@ -27,7 +27,7 @@ from notion_review.domain import ChangeOperation
 from notion_review.superdocs.base import parse_pending_changes
 from notion_review.superdocs.chunking import iter_block_elements
 from notion_review.superdocs.docx import html_to_docx
-from notion_review.superdocs.instructions import parse_instruction
+from notion_review.superdocs.instructions import parse_instructions
 from notion_review.superdocs.models import (
     ApprovalDecision,
     ApproveResult,
@@ -81,18 +81,22 @@ class _JobRecord:
     status: JobStatus
     metadata: dict[str, str]  # pending_changes stored as a JSON string, like the real API
     ops_charged: int
+    error: str | None = None
 
 
 class FakeSuperDocsClient:
     """In-memory implementation of :class:`~notion_review.superdocs.base.SuperDocsClient`."""
 
-    def __init__(self, *, monthly_limit: int = 10_000, quota_used: int = 0) -> None:
+    def __init__(
+        self, *, monthly_limit: int = 10_000, quota_used: int = 0, fail_chats: int = 0
+    ) -> None:
         self._sessions: dict[str, _Session] = {}
         self._jobs: dict[str, _JobRecord] = {}
         self._monthly_limit = monthly_limit
         self._monthly_used = quota_used
         self._counter = 0
         self._chat_calls = 0
+        self._fail_chats = fail_chats  # first N chats return a transient "at capacity" failure
 
     # -- helpers ---------------------------------------------------------------
     def _next(self, prefix: str) -> str:
@@ -133,31 +137,44 @@ class FakeSuperDocsClient:
         approval_mode: str = "ask_every_time",
     ) -> str:
         self._chat_calls += 1
+        job_id = self._next("job")
+
+        # Simulate the live engine's transient "at capacity" failure for the first N chats, so the
+        # retry path is exercised offline. The job comes back failed, exactly like the real one.
+        if self._fail_chats > 0:
+            self._fail_chats -= 1
+            self._jobs[job_id] = _JobRecord(
+                job_id=job_id,
+                session_id=session_id,
+                status=JobStatus.FAILED,
+                metadata={"pending_changes": "[]"},
+                ops_charged=0,
+                error="Instance at graph capacity — did not start; re-submit this request.",
+            )
+            return job_id
+
         if document_html is not None and session_id not in self._sessions:
             self.upload_document(document_html=document_html, session_id=session_id)
         session = self._sessions.get(session_id)
-        job_id = self._next("job")
 
         diffs: list[ChunkDiff] = []
-        parsed = parse_instruction(message)
-        if session is not None and parsed is not None:
-            target = session.by_text(parsed.find_text)
-            if target is not None:
-                diff = self._diff_for(target, parsed.operation, parsed.replace_text)
-                diffs.append(diff)
-                self._apply(session, diff)  # auto-apply to our own copy (no review mode)
+        if session is not None:
+            for parsed in parse_instructions(message):  # a batch carries several edits
+                target = session.by_text(parsed.find_text)
+                if target is not None:
+                    diff = self._diff_for(target, parsed.operation, parsed.replace_text)
+                    diffs.append(diff)
+                    self._apply(session, diff)  # auto-apply to our own copy (no review mode)
 
-        # One operation per edit request (real API: 1 op per <=25 sections). A request that
-        # produces no change costs nothing, mirroring the free-when-nothing-changed rule. The
-        # edit auto-applies and the job completes — no pending proposal, so the session frees.
+        # One operation per request (real API: 1 op per <=25 sections), not one per edit — so a
+        # whole round's edits in one batched chat cost a single op. No change costs nothing.
         ops = 1 if diffs else 0
         self._monthly_used += ops
-        status = JobStatus.COMPLETED
         metadata = {"pending_changes": json.dumps([d.model_dump() for d in diffs])}
         self._jobs[job_id] = _JobRecord(
             job_id=job_id,
             session_id=session_id,
-            status=status,
+            status=JobStatus.COMPLETED,
             metadata=metadata,
             ops_charged=ops,
         )
@@ -193,6 +210,7 @@ class FakeSuperDocsClient:
             status=record.status,
             chunk_diffs=diffs,
             usage=self._usage(record.ops_charged),
+            error=record.error,
         )
 
     def approve(

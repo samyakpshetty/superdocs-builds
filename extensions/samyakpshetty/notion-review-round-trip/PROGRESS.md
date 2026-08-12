@@ -62,8 +62,12 @@ takes a fresh clone to a working demo.
   resolution rather than overwriting the newer edit.
 - **Idempotency wherever an operation costs money.** Each change carries a content hash, so a
   re-run never re-spends an operation or double-applies a change.
-- **Budget guards.** Changes are batched to the fewest operations, with a per-round ceiling and a
-  circuit-breaker that parks a round on quota exhaustion instead of half-applying it.
+- **One batched call per round, best-effort.** A round's edits go to SuperDocs in a single request
+  (one operation covers up to 25 sections), not one chat per change, and it is retried on the
+  engine's transient "at capacity" failure. Because the reviewer's text is authoritative and is
+  written to Notion directly, this metered call never gates the review: a SuperDocs quota limit or
+  outage degrades gracefully rather than parking the round or discarding a change. A per-round
+  ceiling and a sample mode bound the cost.
 - **The returned `.docx` is treated as untrusted input.** It is read behind zip-bomb and XXE
   defenses before any parsing.
 

@@ -29,7 +29,7 @@ from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
 from notion_review.notion.models import plain_text, splice_plain_edit
 from notion_review.superdocs.base import SuperDocsClient, SuperDocsError
-from notion_review.superdocs.instructions import build_instruction
+from notion_review.superdocs.instructions import EditSpec, build_batch_instruction
 from notion_review.superdocs.models import Job, JobStatus
 
 _log = get_logger("notion_review.inbound")
@@ -138,80 +138,101 @@ def propose_changes(
     matched: list[MatchedEdit],
     config: Config,
 ) -> None:
-    """Turn matched edits into gated proposals, spending SuperDocs ops frugally and safely."""
+    """Turn matched edits into gated proposals, then sync SuperDocs in one batched call.
+
+    Building a proposal costs nothing — the reviewer's tracked-change text is authoritative and is
+    what we write back to Notion. The single metered call is a best-effort batch that exercises
+    SuperDocs' edit engine and keeps its copy in sync; a failure or a quota limit degrades
+    gracefully and never discards a reviewer's change.
+    """
     existing_keys = {p.content_key() for p in round_.proposals}
+    text_edits: list[EditSpec] = []
     for edit in matched:
         if config.sample_size is not None and len(round_.proposals) >= config.sample_size:
             break
-        if round_.ops_spent >= config.max_ops_per_round:
-            round_.status = RoundStatus.PARKED
-            _log.warning("ops_budget_exhausted", extra={"round_id": round_.id})
-            break
-
         if edit.is_text_change:
-            # SuperDocs locates the chunk by content and returns its own chunk id, so a
-            # pre-mapped chunk id is not required — the returned diff carries the id we approve.
-            proposal = _propose_text_change(round_, superdocs, edit, config, existing_keys)
-            if round_.status == RoundStatus.PARKED:  # circuit-breaker tripped mid-propose
-                break
+            proposal = ProposedChange(
+                chunk_id="",
+                notion_block_id=edit.notion_block_id,
+                notion_page_id=edit.notion_page_id,
+                block_type=edit.block_type,
+                operation=ChangeOperation.REPLACE,
+                old_html=f"<p>{escape(edit.original_text)}</p>",
+                new_html=f"<p>{escape(edit.proposed_text)}</p>",
+                source=ChangeSource.TRACKED_CHANGE,
+                reviewer_name=edit.reviewer,
+                reviewer_comment=edit.comment,
+            )
         elif edit.comment:
             proposal = _comment_proposal(edit)
         else:
             continue
 
-        if proposal is None or proposal.content_key() in existing_keys:
-            continue  # nothing proposed, or an identical change already exists (idempotent)
+        if proposal.content_key() in existing_keys:
+            continue  # an identical change already exists (idempotent across re-runs)
         existing_keys.add(proposal.content_key())
         round_.proposals.append(proposal)
+        if edit.is_text_change:
+            text_edits.append(
+                EditSpec(ChangeOperation.REPLACE, edit.original_text, edit.proposed_text)
+            )
+
+    # One batched, best-effort SuperDocs call for the whole round — not one chat per change.
+    if text_edits and round_.ops_spent < config.max_ops_per_round:
+        _sync_superdocs(round_, superdocs, text_edits, config)
 
 
-def _propose_text_change(
+def _sync_superdocs(
     round_: ReviewRound,
     superdocs: SuperDocsClient,
-    edit: MatchedEdit,
+    edits: list[EditSpec],
     config: Config,
-    existing_keys: set[str],
-) -> ProposedChange | None:
-    proposal = ProposedChange(
-        chunk_id="",
-        notion_block_id=edit.notion_block_id,
-        notion_page_id=edit.notion_page_id,
-        block_type=edit.block_type,
-        operation=ChangeOperation.REPLACE,
-        old_html=f"<p>{escape(edit.original_text)}</p>",
-        new_html=f"<p>{escape(edit.proposed_text)}</p>",
-        source=ChangeSource.TRACKED_CHANGE,
-        reviewer_name=edit.reviewer,
-        reviewer_comment=edit.comment,
-    )
-    # Idempotency where it costs money: an identical change was already proposed on an earlier
-    # (interrupted) run, so skip the SuperDocs call entirely — a re-run re-spends zero ops.
-    if proposal.content_key() in existing_keys:
-        return None
+) -> None:
+    """Send a round's edits to SuperDocs in one request, retrying a transient engine failure."""
+    job = _chat_with_retry(round_, superdocs, build_batch_instruction(edits), config)
+    if job is not None and job.usage is not None:
+        round_.ops_spent += job.usage.ops_charged
 
-    # Ask SuperDocs to apply the edit — this exercises its edit engine and keeps its copy of
-    # the document in sync. It is best-effort: a reviewer's tracked change already carries the
-    # exact result, and that reviewer-authoritative text is what we write back to the host, so a
-    # SuperDocs hiccup (a slow/busy session, a quirk in how it reports the change) never loses it.
-    instruction = build_instruction(
-        operation=ChangeOperation.REPLACE,
-        find_text=edit.original_text,
-        replace_text=edit.proposed_text,
-        reviewer=edit.reviewer,
-        comment=edit.comment,
-    )
-    try:
-        proposal.job_id = superdocs.chat_async(session_id=round_.session_id, message=instruction)
-        job = _poll_job(superdocs, proposal.job_id, config)
-        if job.usage is not None:
-            round_.ops_spent += job.usage.ops_charged
-            if job.usage.quota_exhausted:
-                round_.status = RoundStatus.PARKED
-                _log.warning("quota_exhausted", extra={"round_id": round_.id})
-    except SuperDocsError as exc:
-        _log.warning("superdocs_chat_failed", extra={"round_id": round_.id, "error": str(exc)})
 
-    return proposal
+def _chat_with_retry(
+    round_: ReviewRound, superdocs: SuperDocsClient, message: str, config: Config
+) -> Job | None:
+    """Run the batched chat; re-submit on a transient "engine at capacity" failure, then give up.
+
+    Giving up is safe: the reviewer's text is written to Notion authoritatively regardless, so this
+    best-effort sync never blocks the review — it just may leave SuperDocs' own copy unsynced.
+    """
+    job: Job | None = None
+    delay = config.superdocs_backoff_base_s
+    for attempt in range(config.superdocs_chat_retries + 1):
+        try:
+            job_id = superdocs.chat_async(session_id=round_.session_id, message=message)
+            job = _poll_job(superdocs, job_id, config)
+        except SuperDocsError as exc:
+            _log.warning("superdocs_chat_failed", extra={"round_id": round_.id, "error": str(exc)})
+            job = None
+        if job is not None and not (job.status == JobStatus.FAILED and _is_transient(job.error)):
+            return job  # healthy result (or a non-transient failure we won't retry)
+        if attempt < config.superdocs_chat_retries:
+            _log.info(
+                "superdocs_chat_retry",
+                extra={
+                    "round_id": round_.id,
+                    "attempt": attempt + 1,
+                    "error": job.error if job else None,
+                },
+            )
+            time.sleep(delay)
+            delay *= 2
+    return job
+
+
+def _is_transient(error: str | None) -> bool:
+    """Whether a failed job is the re-submittable "engine at capacity" kind."""
+    if not error:
+        return False
+    lowered = error.lower()
+    return "capacity" in lowered or "re-submit" in lowered or "did not start" in lowered
 
 
 def _comment_proposal(edit: MatchedEdit) -> ProposedChange:

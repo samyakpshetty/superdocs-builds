@@ -140,6 +140,22 @@ def test_reproposing_a_persisted_round_never_respends_ops() -> None:
     assert len(gate.pending) == 2  # the same proposals are still awaiting approval
 
 
+def test_a_transient_superdocs_capacity_failure_is_retried_then_succeeds() -> None:
+    notion, page_id = FakeNotionClient.build_sample()
+    superdocs = FakeSuperDocsClient(fail_chats=2)  # first two chats fail "at capacity"
+    store = SQLiteStore()
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    fast = Config(superdocs_backoff_base_s=0.001)  # don't actually sleep in the test
+    controller = InboundController(notion=notion, superdocs=superdocs, store=store, config=fast)
+
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+
+    assert superdocs.chat_calls() == 3  # two transient failures re-submitted, the third ran
+    assert superdocs.monthly_used() == 1  # only the successful run was billed
+    assert len(gate.pending) == 2  # the round proposed regardless of the retries
+
+
 def test_a_killed_review_resumes_at_the_gate_from_a_durable_checkpoint(tmp_path) -> None:  # type: ignore[no-untyped-def]
     notion, page_id = FakeNotionClient.build_sample()
     superdocs = FakeSuperDocsClient()
@@ -200,6 +216,9 @@ def test_multi_page_packet_fans_each_change_back_to_its_own_page() -> None:
     final = controller.submit(round_id=packet.round.id, decisions=decisions)
 
     assert final.status == RoundStatus.COMPLETED
+    # Both edits went to SuperDocs in a single batched chat — one operation, not one per change.
+    assert superdocs.chat_calls() == 1
+    assert superdocs.monthly_used() == 1
     assert notion.block_text(block1) == PACKET_P1_PROPOSED  # page 1's edit on page 1's block
     assert notion.block_text(block2) == PACKET_P2_PROPOSED  # page 2's edit on page 2's block
     # Attribution reached the right page, and each page carries its own completion summary.
@@ -303,9 +322,11 @@ def test_no_changes_completes_without_a_gate() -> None:
     assert gate.round.status == RoundStatus.COMPLETED  # nothing to review → done
 
 
-def test_budget_exhaustion_parks_the_round() -> None:
+def test_quota_limit_does_not_discard_reviewer_changes() -> None:
+    # SuperDocs is out of operations. The metered chat is a best-effort sync, not a gate — the
+    # reviewer's changes are authoritative, so they must still be proposed and remain appliable.
     notion, page_id = FakeNotionClient.build_sample()
-    superdocs = FakeSuperDocsClient(monthly_limit=0)  # any edit trips the quota
+    superdocs = FakeSuperDocsClient(monthly_limit=0)
     store = SQLiteStore()
     _outbound(notion, page_id, superdocs, store)
     round_id = store.list_ids()[0]
@@ -314,8 +335,12 @@ def test_budget_exhaustion_parks_the_round() -> None:
     )
 
     gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
-    assert gate.round.status == RoundStatus.PARKED
-    assert gate.pending == []  # circuit-breaker stopped before proposing anything
+    assert gate.round.status == RoundStatus.AWAITING_APPROVAL
+    assert len(gate.pending) == 2  # nothing lost to the quota limit
+
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    final = controller.submit(round_id=round_id, decisions=decisions)
+    assert final.status == RoundStatus.COMPLETED  # applies authoritatively regardless
 
 
 def test_read_back_mismatch_marks_the_change_failed() -> None:

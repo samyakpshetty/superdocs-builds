@@ -139,6 +139,7 @@ class LiveSuperDocsClient:
             chunk_diffs=parse_pending_changes(metadata),
             document_html=data.get("document_html"),
             usage=Usage.model_validate(usage) if usage else None,
+            error=data.get("error"),
         )
 
     def approve(
