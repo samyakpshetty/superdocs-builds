@@ -124,6 +124,54 @@ def duplicate_second_edited_docx() -> bytes:
     return build_docx(document)
 
 
+# A tracked change made INSIDE a hyperlink — the nested case a flat parser drops.
+HYPERLINK_ORIGINAL = "See the old page for details."
+HYPERLINK_PROPOSED = "See the new page for details."
+
+# A moveFrom/moveTo pair — moved text is original-only, then proposed-only.
+MOVE_ORIGINAL = "Alpha. Beta."
+MOVE_PROPOSED = "Beta. Alpha."
+
+
+def hyperlink_tracked_change_docx() -> bytes:
+    """A paragraph whose tracked change lives inside a ``w:hyperlink`` wrapper."""
+    date = "2026-08-12T10:00:00Z"
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p>"
+        f'<w:r><w:t xml:space="preserve">See </w:t></w:r>'
+        f"<w:hyperlink>"
+        f'<w:del w:id="1" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:delText xml:space="preserve">the old page</w:delText></w:r></w:del>'
+        f'<w:ins w:id="2" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve">the new page</w:t></w:r></w:ins>'
+        f"</w:hyperlink>"
+        f'<w:r><w:t xml:space="preserve"> for details.</w:t></w:r>'
+        f"</w:p>"
+        f"</w:body></w:document>"
+    )
+    return build_docx(document)
+
+
+def moved_text_docx() -> bytes:
+    """A paragraph with a ``w:moveFrom`` / ``w:moveTo`` revision pair."""
+    date = "2026-08-12T10:00:00Z"
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p>"
+        f'<w:moveFrom w:id="1" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve">Alpha. </w:t></w:r></w:moveFrom>'
+        f'<w:r><w:t xml:space="preserve">Beta.</w:t></w:r>'
+        f'<w:moveTo w:id="2" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve"> Alpha.</w:t></w:r></w:moveTo>'
+        f"</w:p>"
+        f"</w:body></w:document>"
+    )
+    return build_docx(document)
+
+
 def unchanged_docx(text: str) -> bytes:
     """A .docx with a single, unmodified paragraph — no tracked changes, no comments."""
     document = (

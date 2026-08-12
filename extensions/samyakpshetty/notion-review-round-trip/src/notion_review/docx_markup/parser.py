@@ -61,6 +61,35 @@ def _parse_comments(data: bytes | None) -> dict[str, DocxComment]:
     return result
 
 
+def _collect_runs(
+    element: _Element, original: list[str], proposed: list[str], authors: list[str]
+) -> None:
+    """Walk a paragraph's content in document order, splitting original vs proposed text.
+
+    Real Word files nest runs and revisions inside wrappers — most commonly ``w:hyperlink`` — so
+    a flat pass over the paragraph's direct children silently drops a tracked change made inside a
+    link. We descend into those wrappers, and treat a move (``w:moveFrom`` / ``w:moveTo``) as a
+    delete from the original plus an insert into the proposed.
+    """
+    for child in element:
+        tag = child.tag  # a callable for comment/PI nodes; those match none of the names below
+        if tag in (_w("ins"), _w("moveTo")):  # exists only in the proposed version
+            proposed.append(_gather_text(child, "t"))
+            _add_author(authors, child.get(_w("author")))
+        elif tag == _w("del"):  # deleted text existed only in the original (uses w:delText)
+            original.append(_gather_text(child, "delText"))
+            _add_author(authors, child.get(_w("author")))
+        elif tag == _w("moveFrom"):  # moved-away text: in the original only (uses w:t)
+            original.append(_gather_text(child, "t"))
+            _add_author(authors, child.get(_w("author")))
+        elif tag == _w("r"):  # an unchanged run: present in both versions
+            text = _gather_text(child, "t")
+            original.append(text)
+            proposed.append(text)
+        elif tag in (_w("hyperlink"), _w("smartTag")):  # transparent wrapper: descend
+            _collect_runs(child, original, proposed, authors)
+
+
 def _parse_paragraph(
     paragraph: _Element, index: int, comments: dict[str, DocxComment]
 ) -> ParagraphMarkup:
@@ -68,18 +97,7 @@ def _parse_paragraph(
     proposed: list[str] = []
     authors: list[str] = []
 
-    for child in paragraph:
-        tag = child.tag  # a callable for comment/PI nodes; those match none of the names below
-        if tag == _w("ins"):  # inserted text exists only in the proposed version
-            proposed.append(_gather_text(child, "t"))
-            _add_author(authors, child.get(_w("author")))
-        elif tag == _w("del"):  # deleted text existed only in the original
-            original.append(_gather_text(child, "delText"))
-            _add_author(authors, child.get(_w("author")))
-        elif tag == _w("r"):  # an unchanged run: present in both versions
-            text = _gather_text(child, "t")
-            original.append(text)
-            proposed.append(text)
+    _collect_runs(paragraph, original, proposed, authors)
 
     comment_ids = [ref.get(_w("id")) for ref in paragraph.iter(_w("commentReference"))]
     para_comments = [comments[cid] for cid in comment_ids if cid and cid in comments]

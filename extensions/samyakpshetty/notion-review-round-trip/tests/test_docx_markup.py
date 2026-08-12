@@ -7,9 +7,15 @@ from _docx_fixtures import (
     COMMENT_AUTHOR,
     COMMENTED_PARA,
     HEADING,
+    HYPERLINK_ORIGINAL,
+    HYPERLINK_PROPOSED,
+    MOVE_ORIGINAL,
+    MOVE_PROPOSED,
     PARA_ORIGINAL,
     PARA_PROPOSED,
     build_docx,
+    hyperlink_tracked_change_docx,
+    moved_text_docx,
     reviewed_docx,
     zip_with_too_many_members,
 )
@@ -25,6 +31,22 @@ def test_tracked_change_reconstructs_original_and_proposed() -> None:
     assert "Q3" in change.original_text and "Q3" not in change.proposed_text
     assert "Q4" in change.proposed_text
     assert change.authors == [CHANGE_AUTHOR]  # attribution preserved
+
+
+def test_tracked_change_inside_a_hyperlink_is_not_dropped() -> None:
+    markup = parse_docx(hyperlink_tracked_change_docx())
+    change = next(p for p in markup.changes() if p.is_text_change)
+    assert change.original_text == HYPERLINK_ORIGINAL
+    assert change.proposed_text == HYPERLINK_PROPOSED
+    assert change.authors == [CHANGE_AUTHOR]
+
+
+def test_moved_text_reads_as_original_then_proposed() -> None:
+    markup = parse_docx(moved_text_docx())
+    change = next(p for p in markup.changes() if p.is_text_change)
+    assert change.original_text == MOVE_ORIGINAL
+    assert change.proposed_text == MOVE_PROPOSED
+    assert change.authors == [CHANGE_AUTHOR]
 
 
 def test_comment_is_extracted_with_author() -> None:
