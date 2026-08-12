@@ -119,11 +119,14 @@ class LiveSuperDocsClient:
         document_html: str | None = None,
         approval_mode: str = "ask_every_time",
     ) -> str:
-        # We do NOT use SuperDocs' own review mode (ask_every_time): it leaves a pending
-        # proposal that locks the session, and its approve/deny endpoint is broken (500s).
-        # Instead SuperDocs auto-applies to its own copy and returns the diff; the human gate
-        # and the authoritative apply both live in this integration, against Notion.
-        body: dict[str, Any] = {"message": message, "session_id": session_id}
+        # Review mode: SuperDocs proposes each edit and holds it pending (returning old/new HTML
+        # plus an AI explanation) rather than auto-applying — that pending proposal is what the
+        # human gate shows. The authoritative write is still ours, onto Notion.
+        body: dict[str, Any] = {
+            "message": message,
+            "session_id": session_id,
+            "approval_mode": approval_mode,
+        }
         if document_html is not None:
             body["document_html"] = document_html
         data = self._request("POST", "/v1/chat/async", json=body).json()

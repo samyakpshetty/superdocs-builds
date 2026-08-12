@@ -100,7 +100,7 @@ def build_review_graph(
     def apply(state: ReviewState) -> ReviewState:
         round_ = _load(store, state["round_id"])
         started = time.perf_counter()
-        apply_decisions(round_, state.get("decisions", []), notion)
+        apply_decisions(round_, state.get("decisions", []), notion, superdocs)
         round_.stage_timings_ms["apply"] = (time.perf_counter() - started) * 1000
         store.save(round_)
         _log.info(

@@ -43,6 +43,7 @@ class ChunkDiff(BaseModel):
     old_html: str = ""
     new_html: str = ""
     chunk_type: str = ""
+    ai_explanation: str = ""  # SuperDocs' natural-language note when its AI authored the edit
 
 
 class UploadResult(BaseModel):

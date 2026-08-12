@@ -27,7 +27,7 @@ from notion_review.domain import ChangeOperation
 from notion_review.superdocs.base import parse_pending_changes
 from notion_review.superdocs.chunking import iter_block_elements
 from notion_review.superdocs.docx import html_to_docx
-from notion_review.superdocs.instructions import parse_instructions
+from notion_review.superdocs.instructions import parse_instructions, parse_intents
 from notion_review.superdocs.models import (
     ApprovalDecision,
     ApproveResult,
@@ -45,6 +45,11 @@ _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 
 def _norm(text: str) -> str:
     return " ".join(text.split()).strip()
+
+
+def _is_question(request: str) -> bool:
+    """Stand-in for the AI's judgement: a question is not an edit directive, so decline it."""
+    return request.strip().endswith("?")
 
 
 def _text(el: HtmlElement) -> str:
@@ -156,29 +161,51 @@ class FakeSuperDocsClient:
         if document_html is not None and session_id not in self._sessions:
             self.upload_document(document_html=document_html, session_id=session_id)
         session = self._sessions.get(session_id)
+        review = approval_mode == "ask_every_time"
 
         diffs: list[ChunkDiff] = []
         if session is not None:
-            for parsed in parse_instructions(message):  # a batch carries several edits
+            for parsed in parse_instructions(message):  # scoped find/replace edits
                 target = session.by_text(parsed.find_text)
                 if target is not None:
-                    diff = self._diff_for(target, parsed.operation, parsed.replace_text)
-                    diffs.append(diff)
-                    self._apply(session, diff)  # auto-apply to our own copy (no review mode)
+                    diffs.append(self._diff_for(target, parsed.operation, parsed.replace_text))
+            for intent in parse_intents(message):  # natural-language requests the AI authors
+                target = session.by_text(intent.passage)
+                if target is not None and not _is_question(intent.request):
+                    new_text = self._ai_rewrite(_text(target))
+                    diff = self._diff_for(target, ChangeOperation.REPLACE, new_text)
+                    diffs.append(
+                        diff.model_copy(
+                            update={
+                                "ai_explanation": "Revised the passage per the reviewer's "
+                                "request (fake stand-in for SuperDocs' AI)."
+                            }
+                        )
+                    )
+            if not review:  # auto mode applies to our copy; review mode holds them pending
+                for diff in diffs:
+                    self._apply(session, diff)
 
         # One operation per request (real API: 1 op per <=25 sections), not one per edit — so a
         # whole round's edits in one batched chat cost a single op. No change costs nothing.
         ops = 1 if diffs else 0
         self._monthly_used += ops
+        status = JobStatus.AWAITING_APPROVAL if (review and diffs) else JobStatus.COMPLETED
         metadata = {"pending_changes": json.dumps([d.model_dump() for d in diffs])}
         self._jobs[job_id] = _JobRecord(
             job_id=job_id,
             session_id=session_id,
-            status=JobStatus.COMPLETED,
+            status=status,
             metadata=metadata,
             ops_charged=ops,
         )
         return job_id
+
+    @staticmethod
+    def _ai_rewrite(passage: str) -> str:
+        """Deterministic stand-in for SuperDocs' AI: a concise, marked revision of the passage."""
+        first = passage.split(".")[0].strip()
+        return f"[revised] {first}." if first else passage
 
     def _diff_for(
         self, el: HtmlElement, operation: ChangeOperation, replace_text: str

@@ -9,7 +9,13 @@ from notion_review.superdocs import (
     SuperDocsClient,
     parse_pending_changes,
 )
-from notion_review.superdocs.instructions import build_instruction, parse_instruction
+from notion_review.superdocs.instructions import (
+    EditSpec,
+    build_batch_instruction,
+    build_instruction,
+    parse_instruction,
+)
+from notion_review.superdocs.models import ApprovalDecision
 
 DOC = "<h1>Title</h1><p>The quick brown fox.</p><p>Second paragraph here.</p>"
 
@@ -59,7 +65,7 @@ def test_instruction_round_trips() -> None:
     assert parse_instruction("not our contract") is None
 
 
-def test_chat_auto_applies_and_returns_a_diff() -> None:
+def test_review_mode_proposes_pending_then_approve_applies() -> None:
     client = FakeSuperDocsClient()
     client.upload_document(document_html=DOC, session_id="s1")
 
@@ -67,23 +73,33 @@ def test_chat_auto_applies_and_returns_a_diff() -> None:
         session_id="s1", message=_edit("The quick brown fox.", "The quick red fox.")
     )
     job = client.get_job(job_id)
-    # No review mode: the edit auto-applies and the job completes (session is free), and the
-    # diff is still returned so the integration can gate it and write it to the host.
-    assert job.status == JobStatus.COMPLETED
+    # Review mode: the edit is proposed and held pending (returned as a diff), not yet applied.
+    assert job.status == JobStatus.AWAITING_APPROVAL
     assert len(job.chunk_diffs) == 1
     assert client.monthly_used() == 1  # one op charged
-    assert "red fox" in client.session_html("s1")
-    assert "brown fox" not in client.session_html("s1")
+    assert "brown fox" in client.session_html("s1")  # not applied until approved
+
+    client.approve(
+        session_id="s1",
+        decisions=[ApprovalDecision(chunk_id=job.chunk_diffs[0].chunk_id, approved=True)],
+        job_id=job_id,
+    )
+    assert "red fox" in client.session_html("s1")  # approve applies it to SuperDocs' own copy
 
 
-def test_two_edits_in_one_session_do_not_block() -> None:
-    # The reason we dropped review mode: back-to-back edits must both go through.
+def test_one_chat_proposes_multiple_edits_for_one_op() -> None:
     client = FakeSuperDocsClient()
     client.upload_document(document_html=DOC, session_id="s1")
-    client.chat_async(session_id="s1", message=_edit("The quick brown fox.", "The quick red fox."))
-    client.chat_async(session_id="s1", message=_edit("Second paragraph here.", "Second para."))
-    html = client.session_html("s1")
-    assert "red fox" in html and "Second para." in html
+    msg = build_batch_instruction(
+        [
+            EditSpec(ChangeOperation.REPLACE, "The quick brown fox.", "The quick red fox."),
+            EditSpec(ChangeOperation.REPLACE, "Second paragraph here.", "Second para."),
+        ]
+    )
+    job = client.get_job(client.chat_async(session_id="s1", message=msg))
+    assert job.status == JobStatus.AWAITING_APPROVAL
+    assert len(job.chunk_diffs) == 2  # one operation, two pending proposals
+    assert client.monthly_used() == 1
 
 
 def test_no_op_edit_charges_nothing() -> None:

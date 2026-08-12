@@ -29,8 +29,13 @@ from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
 from notion_review.notion.models import plain_text, splice_plain_edit
 from notion_review.superdocs.base import SuperDocsClient, SuperDocsError
-from notion_review.superdocs.instructions import EditSpec, build_batch_instruction
-from notion_review.superdocs.models import Job, JobStatus
+from notion_review.superdocs.instructions import (
+    EditSpec,
+    IntentSpec,
+    build_batch_instruction,
+    build_intent_instruction,
+)
+from notion_review.superdocs.models import ApprovalDecision, ChunkDiff, Job, JobStatus
 
 _log = get_logger("notion_review.inbound")
 
@@ -138,60 +143,116 @@ def propose_changes(
     matched: list[MatchedEdit],
     config: Config,
 ) -> None:
-    """Turn matched edits into gated proposals, then sync SuperDocs in one batched call.
+    """Propose each reviewer change through SuperDocs, gated for the human, in one batched call.
 
-    Building a proposal costs nothing — the reviewer's tracked-change text is authoritative and is
-    what we write back to Notion. The single metered call is a best-effort batch that exercises
-    SuperDocs' edit engine and keeps its copy in sync; a failure or a quota limit degrades
-    gracefully and never discards a reviewer's change.
+    A tracked change carries the reviewer's exact text (authoritative — that is what we write back
+    to Notion), and SuperDocs still proposes it so the edit is validated by the engine and carries a
+    chunk id to approve. A comment has no concrete edit, so SuperDocs' AI authors one from the
+    reviewer's request — comments-as-intent, where the product does the changing; if the AI declines
+    (e.g. a question), the comment falls back to an attributed Notion note. A SuperDocs failure
+    degrades gracefully: a reviewer's change is never lost.
     """
     existing_keys = {p.content_key() for p in round_.proposals}
-    text_edits: list[EditSpec] = []
+    edits: list[MatchedEdit] = []
+    comments: list[MatchedEdit] = []
     for edit in matched:
-        if config.sample_size is not None and len(round_.proposals) >= config.sample_size:
+        if config.sample_size is not None and len(edits) + len(comments) >= config.sample_size:
             break
         if edit.is_text_change:
-            proposal = ProposedChange(
-                chunk_id="",
+            edits.append(edit)
+        elif edit.comment:
+            comments.append(edit)
+
+    specs = [EditSpec(ChangeOperation.REPLACE, e.original_text, e.proposed_text) for e in edits]
+    intents = [IntentSpec(request=c.comment, passage=c.original_text) for c in comments]
+    job = _run_superdocs_review(round_, superdocs, specs, intents, config)
+
+    # Tracked changes: reviewer text is authoritative; ride SuperDocs' chunk id for approve.
+    for edit in edits:
+        diff = _match_diff(job, edit.original_text)
+        _add_proposal(
+            round_,
+            existing_keys,
+            ProposedChange(
+                chunk_id=diff.chunk_id if diff else "",
                 notion_block_id=edit.notion_block_id,
                 notion_page_id=edit.notion_page_id,
                 block_type=edit.block_type,
+                job_id=job.job_id if job else "",
                 operation=ChangeOperation.REPLACE,
                 old_html=f"<p>{escape(edit.original_text)}</p>",
                 new_html=f"<p>{escape(edit.proposed_text)}</p>",
                 source=ChangeSource.TRACKED_CHANGE,
                 reviewer_name=edit.reviewer,
                 reviewer_comment=edit.comment,
+            ),
+        )
+
+    # Comments: SuperDocs' AI authored the edit; if it declined, keep the comment as a note.
+    for comment in comments:
+        diff = _match_diff(job, comment.original_text)
+        if diff is not None and diff.new_html:
+            new_text = plain_text_from_html(diff.new_html)
+            _add_proposal(
+                round_,
+                existing_keys,
+                ProposedChange(
+                    chunk_id=diff.chunk_id,
+                    notion_block_id=comment.notion_block_id,
+                    notion_page_id=comment.notion_page_id,
+                    block_type=comment.block_type,
+                    job_id=job.job_id if job else "",
+                    operation=ChangeOperation.REPLACE,
+                    old_html=f"<p>{escape(comment.original_text)}</p>",
+                    new_html=f"<p>{escape(new_text)}</p>",
+                    source=ChangeSource.COMMENT_INTENT,
+                    reviewer_name=comment.reviewer,
+                    reviewer_comment=comment.comment,
+                    ai_explanation=diff.ai_explanation,
+                ),
             )
-        elif edit.comment:
-            proposal = _comment_proposal(edit)
         else:
-            continue
-
-        if proposal.content_key() in existing_keys:
-            continue  # an identical change already exists (idempotent across re-runs)
-        existing_keys.add(proposal.content_key())
-        round_.proposals.append(proposal)
-        if edit.is_text_change:
-            text_edits.append(
-                EditSpec(ChangeOperation.REPLACE, edit.original_text, edit.proposed_text)
-            )
-
-    # One batched, best-effort SuperDocs call for the whole round — not one chat per change.
-    if text_edits and round_.ops_spent < config.max_ops_per_round:
-        _sync_superdocs(round_, superdocs, text_edits, config)
+            _add_proposal(round_, existing_keys, _comment_proposal(comment))
 
 
-def _sync_superdocs(
+def _add_proposal(round_: ReviewRound, existing_keys: set[str], proposal: ProposedChange) -> None:
+    if proposal.content_key() in existing_keys:
+        return  # an identical change already exists (idempotent across re-runs)
+    existing_keys.add(proposal.content_key())
+    round_.proposals.append(proposal)
+
+
+def _run_superdocs_review(
     round_: ReviewRound,
     superdocs: SuperDocsClient,
     edits: list[EditSpec],
+    intents: list[IntentSpec],
     config: Config,
-) -> None:
-    """Send a round's edits to SuperDocs in one request, retrying a transient engine failure."""
-    job = _chat_with_retry(round_, superdocs, build_batch_instruction(edits), config)
+) -> Job | None:
+    """One batched review-mode chat proposing every edit; returns the pending proposals or None."""
+    if not (edits or intents) or round_.ops_spent >= config.max_ops_per_round:
+        return None
+    parts = []
+    if edits:
+        parts.append(build_batch_instruction(edits))
+    if intents:
+        parts.append(build_intent_instruction(intents))
+    job = _chat_with_retry(round_, superdocs, "\n\n".join(parts), config)
     if job is not None and job.usage is not None:
         round_.ops_spent += job.usage.ops_charged
+    return job
+
+
+def _match_diff(job: Job | None, original_text: str) -> ChunkDiff | None:
+    """Find the pending proposal whose original chunk text matches this edit's as-sent text."""
+    if job is None:
+        return None
+    target = _norm(original_text)
+    for diff in job.chunk_diffs:
+        old = _norm(plain_text_from_html(diff.old_html))
+        if old and (old == target or target in old or old in target):
+            return diff
+    return None
 
 
 def _chat_with_retry(
@@ -264,12 +325,13 @@ def apply_decisions(
     round_: ReviewRound,
     decisions: list[dict[str, object]],
     notion: NotionClient,
+    superdocs: SuperDocsClient,
 ) -> None:
-    """Record the human's item-by-item decisions and write approved changes back to Notion.
+    """Record the human's item-by-item decisions, then apply the approved changes.
 
-    SuperDocs is not consulted here: it already produced (and auto-applied to its own copy) the
-    edit during propose. The human gate and the authoritative apply both live in this integration,
-    against Notion — the review approves what lands on the page.
+    The human gate is the review: it decides what lands. Each decision is relayed to SuperDocs'
+    ``approve`` (the fourth contract call, which edits SuperDocs' own copy) as a best-effort step,
+    and then written authoritatively onto the Notion block via Notion's API — the source of truth.
     """
     decision_by_id = {str(d["proposal_id"]): d for d in decisions}
 
@@ -281,7 +343,10 @@ def apply_decisions(
         approved = bool(decision.get("approved"))
         proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED
 
-    # 2. Write each approved change back to Notion — idempotent, verified, attributed.
+    # 2. Relay the decisions to SuperDocs' approve endpoint (four-call contract), best-effort.
+    _relay_to_superdocs_approve(round_, superdocs)
+
+    # 3. Write each approved change back to Notion — idempotent, verified, attributed.
     round_.status = RoundStatus.APPLYING
     for proposal in round_.proposals:
         if proposal.status == ProposalStatus.APPROVED:
@@ -291,6 +356,35 @@ def apply_decisions(
     round_.status = RoundStatus.FAILED if failed else RoundStatus.COMPLETED
 
     _post_page_summaries(round_, notion)
+
+
+def _relay_to_superdocs_approve(round_: ReviewRound, superdocs: SuperDocsClient) -> None:
+    """Relay the human's decisions to SuperDocs' ``approve`` — best-effort, item-by-item.
+
+    This is the fourth contract call. It applies the decision to SuperDocs' own copy of the
+    document; the authoritative write is the Notion write-back, so a failure here (the endpoint is
+    currently unreliable) never blocks the review — it is logged and the round proceeds.
+    """
+    decided = [
+        p
+        for p in round_.proposals
+        if p.chunk_id and p.status in (ProposalStatus.APPROVED, ProposalStatus.REJECTED)
+    ]
+    if not decided:
+        return
+    job_id = next((p.job_id for p in decided if p.job_id), "")
+    decisions = [
+        ApprovalDecision(chunk_id=p.chunk_id, approved=p.status == ProposalStatus.APPROVED)
+        for p in decided
+    ]
+    try:
+        result = superdocs.approve(session_id=round_.session_id, decisions=decisions, job_id=job_id)
+        _log.info(
+            "superdocs_approve",
+            extra={"round_id": round_.id, "applied": result.applied_count},
+        )
+    except SuperDocsError as exc:
+        _log.warning("superdocs_approve_degraded", extra={"round_id": round_.id, "error": str(exc)})
 
 
 def _post_page_summaries(round_: ReviewRound, notion: NotionClient) -> None:
@@ -319,7 +413,7 @@ def _apply_one(round_: ReviewRound, proposal: ProposedChange, notion: NotionClie
     if proposal.status == ProposalStatus.APPLIED:
         return  # idempotent: already written on an earlier (interrupted) run
     try:
-        if proposal.source == ChangeSource.TRACKED_CHANGE:
+        if proposal.source in (ChangeSource.TRACKED_CHANGE, ChangeSource.COMMENT_INTENT):
             # Drift guard: the reviewer marked up the text we sent. If the Notion block changed
             # since then (someone edited the page while it was out for review), overwriting would
             # silently discard that newer edit. Surface the conflict instead — never clobber.
@@ -346,10 +440,17 @@ def _apply_one(round_: ReviewRound, proposal: ProposedChange, notion: NotionClie
                 proposal.status = ProposalStatus.FAILED
                 proposal.error = "read-back mismatch: block did not reflect the change"
                 return
-            note = (
-                f"Applied {proposal.reviewer_name}'s change (review round {round_.id}): "
-                f"“{_clip(as_sent)}” → “{_clip(new_text)}”"
-            )
+            if proposal.source == ChangeSource.COMMENT_INTENT:
+                note = (
+                    f"Applied {proposal.reviewer_name}'s comment as an edit (review round "
+                    f"{round_.id}): “{_clip(as_sent)}” → “{_clip(new_text)}”. "
+                    f"Requested: “{_clip(proposal.reviewer_comment)}”."
+                )
+            else:
+                note = (
+                    f"Applied {proposal.reviewer_name}'s change (review round {round_.id}): "
+                    f"“{_clip(as_sent)}” → “{_clip(new_text)}”"
+                )
         else:
             note = (
                 f"{proposal.reviewer_name} (review round {round_.id}): {proposal.reviewer_comment}"

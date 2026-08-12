@@ -39,8 +39,9 @@ class ChangeOperation(StrEnum):
 class ChangeSource(StrEnum):
     """Where in the Word markup a change originated."""
 
-    TRACKED_CHANGE = "tracked_change"  # a w:ins / w:del revision
-    COMMENT = "comment"  # a reviewer comment interpreted as an edit instruction
+    TRACKED_CHANGE = "tracked_change"  # a w:ins / w:del revision — the reviewer's exact text
+    COMMENT_INTENT = "comment_intent"  # a comment SuperDocs' AI turned into a concrete edit
+    COMMENT = "comment"  # a reviewer comment kept as an attributed Notion comment (fallback)
 
 
 class ProposalStatus(StrEnum):
@@ -90,6 +91,7 @@ class ProposedChange(BaseModel):
     source: ChangeSource = ChangeSource.TRACKED_CHANGE
     reviewer_name: str = "Unknown reviewer"
     reviewer_comment: str = ""
+    ai_explanation: str = ""  # SuperDocs' note when its AI authored the edit (comment-intent)
     status: ProposalStatus = ProposalStatus.PENDING
     error: str | None = None
 

@@ -21,6 +21,7 @@ _OP = "<<<OP>>>"
 _FIND = "<<<FIND>>>"
 _REPLACE = "<<<REPLACE_WITH>>>"
 _END = "<<<END>>>"
+_INTENT = "<<<INTENT>>>"
 _MAX_FIELD = 4000  # bound reviewer-supplied text so one comment can't inflate the payload
 
 
@@ -38,6 +39,14 @@ class EditSpec:
     operation: ChangeOperation
     find_text: str
     replace_text: str
+
+
+@dataclass(frozen=True)
+class IntentSpec:
+    """A natural-language reviewer request scoped to one passage; the AI authors the edit."""
+
+    request: str
+    passage: str
 
 
 def _sanitize(text: str) -> str:
@@ -99,6 +108,42 @@ def build_batch_instruction(edits: list[EditSpec]) -> str:
     for spec in edits:
         lines += _edit_block(spec)
     return "\n".join(lines)
+
+
+def build_intent_instruction(intents: list[IntentSpec]) -> str:
+    """Render reviewer comments as natural-language edit requests for SuperDocs' AI to author.
+
+    Unlike a tracked change, a comment has no concrete replacement — SuperDocs writes it. Each
+    request is scoped to one passage (FIND) so the AI cannot widen the edit, and reviewer text is
+    sanitised. This is where SuperDocs does the changing; the result is gated like any other edit.
+    """
+    lines = [
+        f"Apply these {len(intents)} reviewer requests. For each, change ONLY the passage marked "
+        "FIND, exactly as the request asks, and leave every other part of the document unchanged.",
+        "",
+    ]
+    for spec in intents:
+        lines += [_INTENT, _sanitize(spec.request), _FIND, _sanitize(spec.passage), _END]
+    return "\n".join(lines)
+
+
+def parse_intents(message: str) -> list[IntentSpec]:
+    """Reverse :func:`build_intent_instruction` — the (request, passage) pairs the fake acts on."""
+    out: list[IntentSpec] = []
+    cursor = 0
+    while True:
+        i_int = message.find(_INTENT, cursor)
+        if i_int == -1:
+            break
+        i_find = message.find(_FIND, i_int + len(_INTENT))
+        i_end = message.find(_END, i_find + len(_FIND)) if i_find != -1 else -1
+        if -1 in (i_find, i_end):
+            break
+        request = message[i_int + len(_INTENT) : i_find].strip("\n").strip()
+        passage = message[i_find + len(_FIND) : i_end].strip("\n")
+        cursor = i_end + len(_END)
+        out.append(IntentSpec(request=request, passage=passage))
+    return out
 
 
 def parse_instructions(message: str) -> list[ParsedInstruction]:

@@ -202,6 +202,34 @@ def packet_review_docx() -> bytes:
     return build_docx(document)
 
 
+# A comment that is an edit REQUEST (not a question) — SuperDocs' AI should author an edit.
+INTENT_PARA = "The ingestion service runs on a single Postgres instance behind a queue."
+INTENT_COMMENT = "Make this sentence concise and professional."
+
+
+def comment_intent_docx() -> bytes:
+    """One paragraph carrying a directive comment (an edit request), no tracked change."""
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p>"
+        f'<w:commentRangeStart w:id="0"/>'
+        f'<w:r><w:t xml:space="preserve">{INTENT_PARA}</w:t></w:r>'
+        f'<w:commentRangeEnd w:id="0"/>'
+        f'<w:r><w:commentReference w:id="0"/></w:r>'
+        f"</w:p>"
+        f"</w:body></w:document>"
+    )
+    comments = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:comments xmlns:w="{W}">'
+        f'<w:comment w:id="0" w:author="{COMMENT_AUTHOR}" w:date="2026-08-12T11:00:00Z" '
+        f'w:initials="SE"><w:p><w:r><w:t>{INTENT_COMMENT}</w:t></w:r></w:p></w:comment>'
+        f"</w:comments>"
+    )
+    return build_docx(document, comments)
+
+
 def unchanged_docx(text: str) -> bytes:
     """A .docx with a single, unmodified paragraph — no tracked changes, no comments."""
     document = (
