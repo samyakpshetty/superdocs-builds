@@ -110,7 +110,8 @@ def send_for_review(
     notion.create_comment(
         page_id=page_id,
         rich_text=plain_text(
-            f"Sent for review — round {round_.id}. Changes will return here for your approval."
+            f"Sent for external review · round {round_.id}. "
+            "Approved changes will be applied to this page and recorded here."
         ),
     )
     _log.info(
