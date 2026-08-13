@@ -70,7 +70,6 @@ class Config(BaseModel):
     superdocs_poll_interval_s: float = Field(default=2.0, gt=0)
     notion_max_retries: int = Field(default=5, ge=0)
     notion_min_interval_s: float = Field(default=0.34, ge=0)  # ~3 req/s Notion rate limit
-    worker_concurrency: int = Field(default=4, ge=1)
 
     @model_validator(mode="after")
     def _check_sample(self) -> Config:

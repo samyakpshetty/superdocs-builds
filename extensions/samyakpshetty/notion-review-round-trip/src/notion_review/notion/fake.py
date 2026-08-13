@@ -14,6 +14,7 @@ from notion_review.notion.models import (
     Block,
     ChildrenPage,
     Comment,
+    DatabaseRef,
     Page,
     QueueRow,
     RichText,
@@ -142,11 +143,11 @@ class FakeNotionClient:
     # -- the in-Notion review queue --------------------------------------------
     def create_database(
         self, *, parent_page_id: str, title: str, properties: dict[str, object]
-    ) -> str:
+    ) -> DatabaseRef:
         database_id = self._next("db")
         self._databases[database_id] = []
         self._database_titles[database_id] = title
-        return database_id
+        return DatabaseRef(id=database_id, url=f"https://notion.so/{database_id}")
 
     def create_row(self, *, database_id: str, properties: dict[str, object]) -> QueueRow:
         if database_id not in self._databases:

@@ -28,7 +28,7 @@ from notion_review.domain import (
 )
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
-from notion_review.notion.models import plain_text, splice_plain_edit
+from notion_review.notion.models import RichText, plain_text, splice_plain_edit
 from notion_review.superdocs.base import SuperDocsClient, SuperDocsError
 from notion_review.superdocs.instructions import (
     EditSpec,
@@ -505,8 +505,13 @@ def post_page_summaries(round_: ReviewRound, notion: NotionClient) -> None:
         summary = f"Review round {round_.id} complete — {applied} applied, {rejected} rejected"
         if conflicts:
             summary += f", {conflicts} skipped (page changed since review)"
+        # The page keeps a link back to the review round it came from: the round's queue, which
+        # holds every change, who asked for it, and what became of it.
+        note = [RichText(text=f"{summary}. ")]
+        if round_.review_url:
+            note.append(RichText(text="See the review round", href=round_.review_url))
         try:
-            notion.create_comment(page_id=page_id, rich_text=plain_text(f"{summary}."))
+            notion.create_comment(page_id=page_id, rich_text=note)
         except NotionError as exc:
             _log.warning(
                 "summary_comment_failed",

@@ -49,6 +49,31 @@ def test_pending_changes_become_rows_the_owner_can_decide() -> None:
     assert any("Review queue" in c.plain() for c in notion.comments_for(gate.round.notion_page_id))
 
 
+def test_the_page_keeps_a_clickable_link_to_the_review_round() -> None:
+    # The card asks that the page keep a link to the review round it came from. The round's queue
+    # is that record — it holds every change, who asked for it, and what became of it — so the
+    # page links to it, both when the review opens and when it closes.
+    notion, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    publish_pending(gate.round, notion, store)
+
+    round_ = store.get(round_id)
+    assert round_ is not None
+    assert round_.review_url  # a real Notion URL, not a fabricated anchor
+    assert round_.queue_database_id in round_.review_url
+
+    page_comments = notion.comments_for(round_.notion_page_id)
+    linked = [run for c in page_comments for run in c.rich_text if run.href]
+    assert any(run.href == round_.review_url for run in linked)  # clickable, on the page
+
+    # And again when the round finishes, so the record survives the review.
+    decisions = [{"proposal_id": p.id, "approved": True} for p in round_.pending()]
+    final = controller.submit(round_id=round_id, decisions=decisions)
+    closing = notion.comments_for(final.notion_page_id)[-1]
+    assert "complete" in closing.plain()
+    assert any(run.href == final.review_url for run in closing.rich_text if run.href)
+
+
 def test_publishing_twice_does_not_duplicate_rows() -> None:
     notion, store, controller, round_id = _setup()
     gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())

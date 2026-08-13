@@ -27,7 +27,7 @@ from collections.abc import Callable
 from notion_review.domain import ChangeSource, ProposedChange, ReviewRound
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
-from notion_review.notion.models import RichText, plain_text
+from notion_review.notion.models import RichText
 from notion_review.notion.queue_schema import (
     STATUS_PENDING,
     decision_from_status,
@@ -43,28 +43,34 @@ _log = get_logger("notion_review.notion_gate")
 
 
 def ensure_queue(round_: ReviewRound, notion: NotionClient) -> str:
-    """Create the round's review queue on the page, once; returns the database id."""
+    """Create the round's review queue on the page, once; returns the database id.
+
+    The queue is also the round's durable record: it lives on the page, holds every change with
+    who asked for it and what became of it, and its URL is the link the page keeps back to the
+    review round it came from.
+    """
     if round_.queue_database_id:
         return round_.queue_database_id
-    database_id = notion.create_database(
+    database = notion.create_database(
         parent_page_id=round_.notion_page_id,
         title=f"Review queue · round {round_.id}",
         properties=queue_properties(),
     )
-    round_.queue_database_id = database_id
-    _log.info("queue_created", extra={"round_id": round_.id, "database_id": database_id})
+    round_.queue_database_id = database.id
+    round_.review_url = database.url
+    _log.info("queue_created", extra={"round_id": round_.id, "database_id": database.id})
     try:
         notion.create_comment(
             page_id=round_.notion_page_id,
-            rich_text=plain_text(
-                f"Review round {round_.id}: changes are waiting for you in the "
-                f"“Review queue · round {round_.id}” database on this page. "
-                "Set each row's Status to Approved or Rejected."
-            ),
+            rich_text=[
+                RichText(text=f"Review round {round_.id}: changes are waiting for you in "),
+                RichText(text=f"Review queue · round {round_.id}", href=database.url or None),
+                RichText(text=" on this page. Set each row's Status to Approved or Rejected."),
+            ],
         )
     except NotionError as exc:  # the queue still exists; the notice is a courtesy
         _log.warning("queue_notice_failed", extra={"round_id": round_.id, "error": str(exc)})
-    return database_id
+    return database.id
 
 
 def publish_pending(round_: ReviewRound, notion: NotionClient, store: Store) -> int:

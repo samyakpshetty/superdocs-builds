@@ -90,6 +90,13 @@ class ChildrenPage(BaseModel):
     has_more: bool = False
 
 
+class DatabaseRef(BaseModel):
+    """A database Notion created for us — its id, and the URL the page can link to."""
+
+    id: str
+    url: str = ""
+
+
 class QueueRow(BaseModel):
     """One row of the in-Notion review queue: a proposed change the owner decides on."""
 

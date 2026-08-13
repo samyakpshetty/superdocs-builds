@@ -48,7 +48,8 @@ def test_send_persists_the_round_and_links_it_on_the_page() -> None:
     assert reloaded is not None
     assert reloaded.status == RoundStatus.SENT
 
+    # On sending, the page records which round it went out in; the clickable link to that round
+    # appears once the round has a queue to point at (see test_notion_gate).
     comments = notion.comments_for(page_id)
     assert len(comments) == 1
-    assert round_.id in comments[0].plain()  # the page keeps a link to the review round
-    assert round_.review_url is not None and round_.id in round_.review_url
+    assert round_.id in comments[0].plain()

@@ -10,7 +10,15 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from notion_review.notion.models import Block, ChildrenPage, Comment, Page, QueueRow, RichText
+from notion_review.notion.models import (
+    Block,
+    ChildrenPage,
+    Comment,
+    DatabaseRef,
+    Page,
+    QueueRow,
+    RichText,
+)
 
 
 class NotionError(Exception):
@@ -56,8 +64,8 @@ class NotionClient(Protocol):
     # -- the in-Notion review queue: where the page owner approves each change ---------------
     def create_database(
         self, *, parent_page_id: str, title: str, properties: dict[str, Any]
-    ) -> str:
-        """Create the review-queue database under the page; returns its id."""
+    ) -> DatabaseRef:
+        """Create the review-queue database under the page; returns its id and URL."""
         ...
 
     def create_row(self, *, database_id: str, properties: dict[str, Any]) -> QueueRow:

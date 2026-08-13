@@ -137,7 +137,6 @@ def send_packet_for_review(
 
     docx = superdocs.export(session_id=round_.session_id, fmt="docx")
 
-    round_.review_url = f"{pages[0].url}#review-{round_.id}"
     round_.status = RoundStatus.SENT
     store.save(round_)
 

@@ -21,6 +21,7 @@ from notion_review.notion.models import (
     Block,
     ChildrenPage,
     Comment,
+    DatabaseRef,
     Page,
     QueueRow,
     RichText,
@@ -146,14 +147,14 @@ class LiveNotionClient:
     # -- the in-Notion review queue -------------------------------------------
     def create_database(
         self, *, parent_page_id: str, title: str, properties: dict[str, Any]
-    ) -> str:
+    ) -> DatabaseRef:
         payload = {
             "parent": {"type": "page_id", "page_id": parent_page_id},
             "title": [{"type": "text", "text": {"content": title}}],
             "properties": properties,
         }
         data = self._request("POST", "/v1/databases", json=payload).json()
-        return str(data["id"])
+        return DatabaseRef(id=str(data["id"]), url=data.get("url", ""))
 
     def create_row(self, *, database_id: str, properties: dict[str, Any]) -> QueueRow:
         payload = {"parent": {"database_id": database_id}, "properties": properties}

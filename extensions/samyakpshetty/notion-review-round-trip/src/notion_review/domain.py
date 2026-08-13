@@ -129,7 +129,7 @@ class ReviewRound(BaseModel):
     proposals: list[ProposedChange] = Field(default_factory=list)
 
     ops_spent: int = 0  # SuperDocs operations consumed by this round
-    review_url: str | None = None  # link recorded back on the Notion page
+    review_url: str | None = None  # the round's queue in Notion — the page's link back to it
     queue_database_id: str = ""  # the in-Notion review queue the owner approves changes in
     bot_user_id: str = ""  # our own Notion identity, so a human's reply is told from our comment
     stage_timings_ms: dict[str, float] = Field(default_factory=dict)  # where the time went
