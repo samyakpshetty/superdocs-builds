@@ -41,6 +41,7 @@ class ReviewState(TypedDict, total=False):
     round_id: str
     matched: list[dict[str, Any]]
     decisions: list[dict[str, Any]]
+    cursor: int  # how many matched edits have been proposed so far (the batch loop's position)
 
 
 @dataclass
@@ -69,12 +70,21 @@ def build_review_graph(
     """Compile the propose → gate → apply graph with its dependencies bound in."""
 
     def propose(state: ReviewState) -> ReviewState:
+        """Propose the next batch of edits — one SuperDocs request, one operation.
+
+        A SuperDocs session holds one pending proposal set at a time, so a review larger than
+        ``sections_per_op`` cannot be proposed in one go: the next batch goes out only after this
+        one has been gated and applied (which resolves the pending set and frees the session).
+        """
         round_ = _load(store, state["round_id"])
         round_.status = RoundStatus.INGESTING
         edits = [MatchedEdit.model_validate(m) for m in state.get("matched", [])]
+        cursor = state.get("cursor", 0)
+        batch = edits[cursor : cursor + config.sections_per_op]
         started = time.perf_counter()
-        propose_changes(round_, superdocs, edits, config)
-        round_.stage_timings_ms["propose"] = (time.perf_counter() - started) * 1000
+        propose_changes(round_, superdocs, batch, config)
+        elapsed = (time.perf_counter() - started) * 1000
+        round_.stage_timings_ms["propose"] = round_.stage_timings_ms.get("propose", 0.0) + elapsed
         if round_.status != RoundStatus.PARKED and round_.pending():
             round_.status = RoundStatus.AWAITING_APPROVAL
         store.save(round_)
@@ -82,11 +92,12 @@ def build_review_graph(
             "changes_proposed",
             extra={
                 "round_id": round_.id,
+                "batch": f"{cursor + len(batch)}/{len(edits)}",
                 "pending": len(round_.pending()),
                 "ops": round_.ops_spent,
             },
         )
-        return {}
+        return {"cursor": cursor + len(batch)}
 
     def gate(state: ReviewState) -> ReviewState:
         round_ = _load(store, state["round_id"])
@@ -101,7 +112,8 @@ def build_review_graph(
         round_ = _load(store, state["round_id"])
         started = time.perf_counter()
         apply_decisions(round_, state.get("decisions", []), notion, superdocs, config)
-        round_.stage_timings_ms["apply"] = (time.perf_counter() - started) * 1000
+        elapsed = (time.perf_counter() - started) * 1000
+        round_.stage_timings_ms["apply"] = round_.stage_timings_ms.get("apply", 0.0) + elapsed
         store.save(round_)
         _log.info(
             "changes_applied",
@@ -116,11 +128,24 @@ def build_review_graph(
         store.save(round_)
         return {}
 
+    def _more_batches(state: ReviewState) -> bool:
+        return state.get("cursor", 0) < len(state.get("matched", []))
+
     def route_after_propose(state: ReviewState) -> str:
         round_ = _load(store, state["round_id"])
         if round_.status == RoundStatus.PARKED:
             return "finalize"
-        return "gate" if round_.pending() else "finalize"
+        if round_.pending():
+            return "gate"
+        # This batch proposed nothing; move on to the next rather than ending the round.
+        return "propose" if _more_batches(state) else "finalize"
+
+    def route_after_apply(state: ReviewState) -> str:
+        """Continue with the next batch once the applied one has freed SuperDocs' session."""
+        round_ = _load(store, state["round_id"])
+        if round_.status == RoundStatus.PARKED or round_.ops_spent >= config.max_ops_per_round:
+            return "finalize"
+        return "propose" if _more_batches(state) else "finalize"
 
     graph = StateGraph(ReviewState)
     graph.add_node("propose", propose)
@@ -129,10 +154,14 @@ def build_review_graph(
     graph.add_node("finalize", finalize)
     graph.add_edge(START, "propose")
     graph.add_conditional_edges(
-        "propose", route_after_propose, {"gate": "gate", "finalize": "finalize"}
+        "propose",
+        route_after_propose,
+        {"gate": "gate", "propose": "propose", "finalize": "finalize"},
     )
     graph.add_edge("gate", "apply")
-    graph.add_edge("apply", END)
+    graph.add_conditional_edges(
+        "apply", route_after_apply, {"propose": "propose", "finalize": "finalize"}
+    )
     graph.add_edge("finalize", END)
     return graph.compile(checkpointer=checkpointer)
 

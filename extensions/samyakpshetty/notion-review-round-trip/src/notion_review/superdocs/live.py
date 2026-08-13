@@ -32,10 +32,12 @@ from notion_review.superdocs.models import (
 _log = get_logger("notion_review.superdocs.live")
 _RETRYABLE = frozenset({429, 500, 502, 503, 504})
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-# The session locks while SuperDocs is still processing a request ("session_busy", 409). This
-# is the documented "still processing, not a crash" state, so we wait for it to clear.
+# The session reports 409 "session_busy" both while a request is still processing (transient —
+# worth waiting out) and while an earlier batch's proposals are still pending approval (not
+# transient — waiting cannot clear it, only resolving the proposals can). We wait long enough to
+# cover the documented processing latency, then fail fast instead of stalling for many minutes.
 _BUSY_WAIT_S = 5.0
-_BUSY_RETRIES = 36  # up to ~3 minutes, matching SuperDocs' stated latency ceiling
+_BUSY_RETRIES = 12  # ~1 minute; a lock held by pending proposals will never clear by waiting
 
 
 class LiveSuperDocsClient:

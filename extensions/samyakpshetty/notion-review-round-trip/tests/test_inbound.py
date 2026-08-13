@@ -33,6 +33,7 @@ from notion_review.notion.models import Annotations, RichText, plain_text
 from notion_review.notion.tree import fetch_block_tree
 from notion_review.roundtrip import (
     InboundController,
+    ReviewGate,
     match_edits,
     send_for_review,
     send_packet_for_review,
@@ -160,6 +161,58 @@ def test_a_reviewer_question_stays_a_comment_for_the_owner_never_an_ai_edit() ->
     assert final.status == RoundStatus.COMPLETED
     assert notion.block_text(block) == QUESTION_PARA  # untouched — no fabricated answer
     assert any(QUESTION_COMMENT in c.plain() for c in notion.comments_for(block))
+
+
+def test_many_edits_are_split_into_batches_of_sections_per_op() -> None:
+    # A review with more edits than one operation covers must go out in batches — one operation
+    # each — not as a single unbounded request. Every edit still lands.
+    from _docx_fixtures import build_docx
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    notion = FakeNotionClient()
+    page_id = notion.new_page("Many edits")
+    blocks = [notion.add(page_id, "paragraph", f"Paragraph number {i} is here.") for i in range(5)]
+
+    paras = "".join(
+        f"<w:p><w:r><w:t>Paragraph number {i} is </w:t></w:r>"
+        f'<w:del w:id="{i * 2}" w:author="Dana Reviewer" w:date="2026-08-13T10:00:00Z">'
+        f"<w:r><w:delText>here.</w:delText></w:r></w:del>"
+        f'<w:ins w:id="{i * 2 + 1}" w:author="Dana Reviewer" w:date="2026-08-13T10:00:00Z">'
+        f"<w:r><w:t>revised.</w:t></w:r></w:ins></w:p>"
+        for i in range(5)
+    )
+    markup = build_docx(
+        f'<?xml version="1.0"?><w:document xmlns:w="{W}"><w:body>{paras}</w:body></w:document>'
+    )
+
+    superdocs = FakeSuperDocsClient()
+    store = SQLiteStore()
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    controller = InboundController(
+        notion=notion,
+        superdocs=superdocs,
+        store=store,
+        config=Config(sections_per_op=2),  # 5 edits -> 3 batches
+    )
+
+    # A SuperDocs session holds one pending proposal set at a time, so batches are gated in turn:
+    # propose <=2 -> approve -> apply (frees the session) -> propose the next.
+    gate = controller.start(round_id=round_id, docx_bytes=markup)
+    rounds = 0
+    while gate.pending:
+        assert len(gate.pending) <= 2  # never more than one batch awaits approval
+        rounds += 1
+        final = controller.submit(
+            round_id=round_id,
+            decisions=[{"proposal_id": p.id, "approved": True} for p in gate.pending],
+        )
+        gate = ReviewGate(round=final, pending=final.pending())
+
+    assert rounds == 3  # ceil(5 / 2) batches, each gated on its own
+    assert superdocs.chat_calls() == 3  # one request per batch
+    assert superdocs.monthly_used() == 3  # one operation per batch, not per edit
+    assert all("revised." in notion.block_text(b) for b in blocks)  # every edit landed
 
 
 def test_extract_links_flags_urls_and_dangerous_schemes() -> None:

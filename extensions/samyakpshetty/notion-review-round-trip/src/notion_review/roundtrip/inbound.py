@@ -175,13 +175,14 @@ def propose_changes(
     matched: list[MatchedEdit],
     config: Config,
 ) -> None:
-    """Propose each reviewer change through SuperDocs, gated for the human, in one batched call.
+    """Propose each reviewer change through SuperDocs, in batched calls, gated for the human.
 
     A tracked change carries the reviewer's exact text (authoritative — that is what we write back
     to Notion), and SuperDocs still proposes it so the edit is validated by the engine and carries a
-    chunk id to approve. A comment has no concrete edit, so SuperDocs' AI authors one from the
-    reviewer's request — comments-as-intent, where the product does the changing; if the AI declines
-    (e.g. a question), the comment falls back to an attributed Notion note. A SuperDocs failure
+    change id to approve. A comment has no concrete edit, so SuperDocs' AI authors one from the
+    reviewer's request — comments-as-intent, where the product does the changing; a question is
+    never sent to the AI. Edits go out in batches of ``sections_per_op`` (one operation each), so a
+    review with hundreds of edits stays bounded in cost and prompt size. A SuperDocs failure
     degrades gracefully: a reviewer's change is never lost.
     """
     existing_keys = {p.content_key() for p in round_.proposals}
@@ -202,15 +203,17 @@ def propose_changes(
 
     specs = [EditSpec(ChangeOperation.REPLACE, e.original_text, e.proposed_text) for e in edits]
     intents = [IntentSpec(request=c.comment, passage=c.original_text) for c in comment_edits]
-    job = _run_superdocs_review(round_, superdocs, specs, intents, config)
+    proposed = _run_superdocs_review(round_, superdocs, specs, intents, config)
+    used: set[int] = set()  # each returned proposal pairs with exactly one edit
 
     # Questions go straight to the owner as attributed Notion comments — never to the AI.
     for question in questions:
         _add_proposal(round_, existing_keys, _comment_proposal(question))
 
-    # Tracked changes: reviewer text is authoritative; ride SuperDocs' chunk id for approve.
+    # Tracked changes: reviewer text is authoritative; ride SuperDocs' change id for approve.
     for edit in edits:
-        diff = _match_diff(job, edit.original_text)
+        found = _match_proposal(proposed, edit.original_text, used)
+        diff, job_id = found if found is not None else (None, "")
         _add_proposal(
             round_,
             existing_keys,
@@ -220,7 +223,7 @@ def propose_changes(
                 notion_block_id=edit.notion_block_id,
                 notion_page_id=edit.notion_page_id,
                 block_type=edit.block_type,
-                job_id=job.job_id if job else "",
+                job_id=job_id,
                 operation=ChangeOperation.REPLACE,
                 old_html=f"<p>{escape(edit.original_text)}</p>",
                 new_html=f"<p>{escape(edit.proposed_text)}</p>",
@@ -233,8 +236,9 @@ def propose_changes(
 
     # Directive comments: SuperDocs' AI authored the edit; if it declined, keep it as a note.
     for comment in comment_edits:
-        diff = _match_diff(job, comment.original_text)
-        if diff is not None and diff.new_html:
+        found = _match_proposal(proposed, comment.original_text, used)
+        if found is not None and found[0].new_html:
+            diff, job_id = found
             new_text = plain_text_from_html(diff.new_html)
             _add_proposal(
                 round_,
@@ -245,7 +249,7 @@ def propose_changes(
                     notion_block_id=comment.notion_block_id,
                     notion_page_id=comment.notion_page_id,
                     block_type=comment.block_type,
-                    job_id=job.job_id if job else "",
+                    job_id=job_id,
                     operation=ChangeOperation.REPLACE,
                     old_html=f"<p>{escape(comment.original_text)}</p>",
                     new_html=f"<p>{escape(new_text)}</p>",
@@ -273,30 +277,54 @@ def _run_superdocs_review(
     edits: list[EditSpec],
     intents: list[IntentSpec],
     config: Config,
-) -> Job | None:
-    """One batched review-mode chat proposing every edit; returns the pending proposals or None."""
+) -> list[tuple[ChunkDiff, str]]:
+    """Propose one batch of edits in a single SuperDocs request; returns (proposal, job id) pairs.
+
+    One operation covers up to 25 edited *sections* in a single request, and a session holds one
+    pending proposal set at a time — so a batch is the unit of work here, and the caller (the
+    graph) advances to the next batch only after this one has been gated and applied.
+    """
     if not (edits or intents) or round_.ops_spent >= config.max_ops_per_round:
-        return None
+        if round_.ops_spent >= config.max_ops_per_round:
+            _log.warning(
+                "ops_ceiling_reached",
+                extra={"round_id": round_.id, "ops_spent": round_.ops_spent},
+            )
+        return []
     parts = []
     if edits:
         parts.append(build_batch_instruction(edits))
     if intents:
         parts.append(build_intent_instruction(intents))
     job = _chat_with_retry(round_, superdocs, "\n\n".join(parts), config)
-    if job is not None and job.usage is not None:
-        round_.ops_spent += job.usage.ops_charged
-    return job
-
-
-def _match_diff(job: Job | None, original_text: str) -> ChunkDiff | None:
-    """Find the pending proposal whose original chunk text matches this edit's as-sent text."""
     if job is None:
-        return None
+        return []  # the batch failed; reviewer text is still authoritative, so nothing is lost
+    if job.usage is not None:
+        round_.ops_spent += job.usage.ops_charged
+    return [(diff, job.job_id) for diff in job.chunk_diffs]
+
+
+def _match_proposal(
+    proposed: list[tuple[ChunkDiff, str]], original_text: str, used: set[int]
+) -> tuple[ChunkDiff, str] | None:
+    """Pair an edit with the proposal SuperDocs returned for it, across every batch.
+
+    Exact as-sent text wins before containment, and each proposal is consumed once, so two edits
+    with similar text can never collapse onto the same proposal.
+    """
     target = _norm(original_text)
-    for diff in job.chunk_diffs:
-        old = _norm(plain_text_from_html(diff.old_html))
-        if old and (old == target or target in old or old in target):
-            return diff
+    if not target:
+        return None
+    for exact in (True, False):
+        for index, (diff, job_id) in enumerate(proposed):
+            if index in used:
+                continue
+            old = _norm(plain_text_from_html(diff.old_html))
+            if not old:
+                continue
+            if (old == target) if exact else (target in old or old in target):
+                used.add(index)
+                return diff, job_id
     return None
 
 
