@@ -433,7 +433,14 @@ def apply_decisions(
             _apply_one(round_, proposal, notion, config)
 
     failed = any(p.status == ProposalStatus.FAILED for p in round_.proposals)
-    round_.status = RoundStatus.FAILED if failed else RoundStatus.COMPLETED
+    if failed:
+        round_.status = RoundStatus.FAILED
+    elif round_.pending():
+        # Some changes in this batch have not been decided yet. The round is not finished: it goes
+        # back to waiting so a later decision is still picked up, never stranded.
+        round_.status = RoundStatus.AWAITING_APPROVAL
+    else:
+        round_.status = RoundStatus.COMPLETED
     # The completion summary is posted once the whole round finishes, not once per batch.
 
 

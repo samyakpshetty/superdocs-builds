@@ -73,6 +73,36 @@ def test_the_owners_notion_decisions_are_applied_on_the_next_pass(tmp_path: Path
     assert final is not None and final.status == RoundStatus.COMPLETED
 
 
+def test_a_change_decided_late_is_still_applied_and_never_stranded(tmp_path: Path) -> None:
+    # The owner decides most rows now and one of them later. Applying the first batch must not
+    # close the round, or the late decision would never be picked up.
+    service, notion, store, round_id, inbox = _service(tmp_path)
+    (inbox / f"review-{round_id}.docx").write_bytes(stamp_round_id(reviewed_docx(), round_id))
+    service.tick()
+
+    round_ = store.get(round_id)
+    assert round_ is not None and len(round_.pending()) == 2
+    early, late = round_.pending()
+    notion.set_row_status(early.queue_row_id, STATUS_APPROVED)  # only one decided so far
+
+    first = service.tick()
+    assert first.applied == 1
+    assert first.completed == []  # the round is NOT finished
+    waiting = store.get(round_id)
+    assert waiting is not None
+    assert waiting.status == RoundStatus.AWAITING_APPROVAL  # still open for the last decision
+    assert [p.id for p in waiting.pending()] == [late.id]
+
+    notion.set_row_status(late.queue_row_id, STATUS_APPROVED)  # the owner comes back to it
+    second = service.tick()
+
+    assert second.applied == 1
+    assert second.completed == [round_id]
+    done = store.get(round_id)
+    assert done is not None and done.status == RoundStatus.COMPLETED
+    assert done.pending() == []
+
+
 def test_a_file_that_names_no_round_is_set_aside_with_the_reason(tmp_path: Path) -> None:
     service, _, _, _, inbox = _service(tmp_path)
     (inbox / "some-random-document.docx").write_bytes(reviewed_docx())

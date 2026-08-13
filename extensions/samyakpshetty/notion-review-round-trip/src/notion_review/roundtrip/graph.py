@@ -124,6 +124,12 @@ def build_review_graph(
 
     def finalize(state: ReviewState) -> ReviewState:
         round_ = _load(store, state["round_id"])
+        if round_.pending():
+            # An undecided change is still outstanding — the round is not over, so do not close
+            # it or announce a completion the page owner has not actually reached.
+            round_.status = RoundStatus.AWAITING_APPROVAL
+            store.save(round_)
+            return {}
         if round_.status not in (RoundStatus.PARKED, RoundStatus.FAILED):
             round_.status = RoundStatus.COMPLETED
         # One accurate summary per page, now that every batch has been decided.
@@ -148,6 +154,8 @@ def build_review_graph(
         round_ = _load(store, state["round_id"])
         if round_.status == RoundStatus.PARKED or round_.ops_spent >= config.max_ops_per_round:
             return "finalize"
+        if round_.pending():
+            return "gate"  # changes from this batch are still undecided; wait for them
         return "propose" if _more_batches(state) else "finalize"
 
     graph = StateGraph(ReviewState)
@@ -163,7 +171,9 @@ def build_review_graph(
     )
     graph.add_edge("gate", "apply")
     graph.add_conditional_edges(
-        "apply", route_after_apply, {"propose": "propose", "finalize": "finalize"}
+        "apply",
+        route_after_apply,
+        {"gate": "gate", "propose": "propose", "finalize": "finalize"},
     )
     graph.add_edge("finalize", END)
     return graph.compile(checkpointer=checkpointer)
