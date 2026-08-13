@@ -7,6 +7,7 @@ can watch the round-trip end to end without any setup. It is also what ``make de
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import click
@@ -25,11 +26,13 @@ from notion_review.roundtrip import (
 )
 from notion_review.roundtrip.checkpoint import open_checkpointer
 from notion_review.roundtrip.inbound import plain_text_from_html
+from notion_review.roundtrip.intake import FolderIntake
 from notion_review.roundtrip.notion_gate import (
     await_decisions,
     publish_pending,
     record_outcomes,
 )
+from notion_review.roundtrip.service import ReviewService
 from notion_review.sample import demo_page, demo_review_docx
 from notion_review.store import SQLiteStore
 from notion_review.superdocs import FakeSuperDocsClient
@@ -195,6 +198,53 @@ def review_in_notion(round_id: str, markup: str, state: str, poll: float, timeou
     _print_outcome(final.proposals, notion)
     click.echo(f"\n   cost: {final.cost_summary()}")
     click.secho(f"Round {final.id} finished: {final.status.value}.", fg="green", bold=True)
+
+
+@main.command()
+@click.option(
+    "--inbox",
+    default="inbox",
+    type=click.Path(),
+    help="Folder returned reviews land in (a synced Drive/Dropbox folder works).",
+)
+@click.option("--state", default=_STATE_DEFAULT, type=click.Path(), help="Round store file.")
+@click.option("--interval", default=15.0, help="Seconds between passes.")
+@click.option("--once", is_flag=True, help="Run a single pass and exit (for cron).")
+def watch(inbox: str, state: str, interval: float, once: bool) -> None:
+    """Run the review service: returned files are picked up and driven to completion on their own.
+
+    A reviewer's file arriving is the trigger. Each one is matched to its round, proposed through
+    SuperDocs, and queued in Notion for the page owner; their decisions are read back and applied.
+    Nobody runs a command per review.
+    """
+    config = Config.from_env()
+    setup_logging(config.log_format)
+    notion, superdocs = build_clients(config)
+    store = SQLiteStore(state)
+    service = ReviewService(
+        intake=FolderIntake(inbox),
+        notion=notion,
+        superdocs=superdocs,
+        store=store,
+        config=config,
+        checkpointer=open_checkpointer(f"{state}.ckpt"),
+    )
+    click.secho(f"Watching {inbox}/ for returned reviews…", fg="cyan", bold=True)
+    click.echo("  Drop a marked-up .docx in; it is matched, proposed, and queued in Notion.")
+    while True:
+        report = service.tick()
+        for round_id in report.ingested:
+            click.secho(f"  ✓ took in a review for {round_id}", fg="green")
+        for name in report.rejected:
+            click.secho(f"  ! set aside {name} (see {inbox}/failed)", fg="yellow")
+        if report.applied:
+            click.echo(f"  → applied {report.applied} approved change(s) to Notion")
+        for round_id in report.completed:
+            click.secho(f"  ✓ round {round_id} complete", fg="green", bold=True)
+        if once:
+            click.echo(f"  {report.summary()}")
+            return
+        time.sleep(interval)
 
 
 @main.command()
