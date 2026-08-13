@@ -115,7 +115,17 @@ def _render(block: Block, block_map: list[BlockMapEntry]) -> str:
     if t == "divider":
         return "<hr>"
 
-    # Unknown block: preserve it, mapped if it carries text so a reviewer can still touch it.
+    # Unknown block: preserve it, and map it only if it carries text a reviewer could edit.
+    #
+    # Notion reports anything its API does not model — a button, an embed, a synced block — as
+    # ``unsupported`` with no rich text. Mapping one would put an entry with empty text in the
+    # block map, where it competes to match any empty paragraph in the returned document and
+    # could win a change that would then be written to a block holding no text. The button that
+    # starts a review lives on the very page being reviewed, so this is the common case, not an
+    # exotic one. Preserved in the document, absent from the map: the same call as an inline
+    # database.
+    if not block.plain().strip():
+        return f'<div data-nr-type="{escape(block.type, quote=True)}"></div>'
     return _leaf("div", block, inner or escape(block.plain()), block_map)
 
 

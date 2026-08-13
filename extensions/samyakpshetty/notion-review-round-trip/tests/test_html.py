@@ -58,3 +58,32 @@ def test_inline_database_is_preserved_but_not_mapped() -> None:
     assert "Roadmap" in html
     assert 'class="inline-db"' in html
     assert [e.notion_block_id for e in block_map] == ["blk_p"]  # db not mapped
+
+
+def test_the_button_that_starts_a_review_is_preserved_but_never_editable() -> None:
+    # A review is started by a Notion button block on the page being reviewed, and Notion reports
+    # a button as "unsupported" with no text. It must survive the round-trip without becoming a
+    # block a reviewer's change could be matched onto.
+    notion = FakeNotionClient()
+    page = notion.new_page("Launch Plan")
+    notion.add(page, "heading_1", "Launch Plan")
+    notion.add(page, "unsupported", "")  # the Send-for-review button
+    notion.add(page, "paragraph", "We ship in Q3.")
+
+    html, block_map = blocks_to_html(fetch_block_tree(notion, page))
+
+    assert 'data-nr-type="unsupported"' in html  # preserved in the document
+    assert [e.block_type for e in block_map] == ["heading_1", "paragraph"]
+    assert all(e.original_text.strip() for e in block_map)
+
+
+def test_an_unknown_block_that_does_carry_text_is_still_reviewable() -> None:
+    # The rule is "no text, not editable" — not "unknown, not editable". A block type we do not
+    # model but which holds real prose is still someone's writing, and a reviewer may edit it.
+    notion = FakeNotionClient()
+    page = notion.new_page("Spec")
+    notion.add(page, "some_future_block", "This paragraph still belongs to the author.")
+
+    _, block_map = blocks_to_html(fetch_block_tree(notion, page))
+
+    assert [e.original_text for e in block_map] == ["This paragraph still belongs to the author."]
