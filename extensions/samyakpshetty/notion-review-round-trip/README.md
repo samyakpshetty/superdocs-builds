@@ -39,52 +39,37 @@ From end to end, the owner never leaves Notion and the reviewer never leaves Wor
 ## How it works
 
 ```mermaid
-flowchart TB
-    subgraph N["📄 Notion — the source of truth"]
-        BTN["Send for review<br/>(a button on the page)"]
-        REQ["Review requests row<br/>Document ⇄ Returned"]
-        PAGE["The page's blocks"]
-        QUEUE["Review queue<br/>Status: Approved / Rejected"]
-        MARK["A comment on each<br/>changed block"]
-    end
+sequenceDiagram
+    autonumber
+    actor O as 👤 Page owner
+    participant N as 📄 Notion
+    participant S as ⚙️ This integration
+    participant D as 🤖 SuperDocs
+    actor R as 📝 Reviewers, in Word
 
-    subgraph S["⚙️ This integration — one service, polling"]
-        SEND["send: fetch blocks → HTML<br/>+ reversible block map"]
-        STAMP["stamp the round id<br/>into the .docx"]
-        MATCH["intake: match the returned file<br/>to its round by that id"]
-        PARSE["read tracked changes + comments<br/>from raw OOXML"]
-        GATE["LangGraph: propose → gate → apply<br/>(checkpointed, resumable)"]
-        WRITE["write back per block:<br/>size cap → drift guard → splice → read-back"]
-    end
-
-    subgraph D["🤖 SuperDocs — the editing engine"]
-        UP["upload"]
-        CHAT["chat, review mode:<br/>proposes each edit,<br/>authors comment intents"]
-        APPR["approve"]
-        EXP["export .docx"]
-    end
-
-    W["📝 Reviewer in Word<br/>tracked changes + comments"]
-
-    BTN -->|"1 · one click"| REQ
-    REQ -->|"polled"| SEND
-    PAGE -->|"blocks, via Notion's API"| SEND
-    SEND -->|"2 · whole document"| UP
-    UP --> EXP
-    EXP --> STAMP
-    STAMP -->|"3 · attached to the row"| REQ
-    REQ -->|"the reviewer collects it"| W
-    W -->|"4 · marked-up copy, back on the row"| MATCH
-    MATCH --> PARSE --> GATE
-    GATE -->|"5 · scoped edits + comment intents"| CHAT
-    CHAT -->|"proposals: diff, change id, AI note"| GATE
-    GATE -->|"6 · one row per change"| QUEUE
-    GATE -->|"6 · in context, on the line"| MARK
-    QUEUE -->|"7 · the owner decides"| GATE
-    MARK -->|"or replies here"| GATE
-    GATE -->|"8 · relay the decision"| APPR
-    GATE --> WRITE
-    WRITE -->|"9 · only approved changes"| PAGE
+    O->>N: Send for review — a button, or a new row
+    S->>N: poll the Review requests board
+    N-->>S: the request, and the page's blocks
+    S->>D: upload the page as one HTML document
+    S->>D: export .docx
+    D-->>S: the styled Word document
+    S->>S: stamp the review-round id inside it
+    S->>N: attach it to the row it was asked for
+    N-->>R: each reviewer collects it
+    R->>N: every marked-up copy, back on the same row
+    S->>N: poll for returned copies
+    N-->>S: each copy, matched by the id stamped inside it
+    S->>S: read tracked changes + comments from raw OOXML
+    S->>D: propose — scoped edits, and comments for the AI to author
+    D-->>S: proposals: diff, change id, AI note
+    S->>N: a queue row per change, and a comment on each changed line
+    O->>N: Approve or Reject, one change at a time
+    S->>N: poll for decisions
+    N-->>S: the owner's decisions
+    S->>D: relay each job's decisions, once they are all in
+    S->>N: write approved changes, block by block
+    Note over S,N: size cap → drift guard → surgical splice → read-back
+    S->>N: record each outcome, and post the round's summary
 ```
 
 **The gate is an operation, not a screen.** `InboundController` exposes approval; the Notion queue,
