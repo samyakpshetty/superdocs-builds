@@ -89,6 +89,14 @@ class ChildrenPage(BaseModel):
     has_more: bool = False
 
 
+class QueueRow(BaseModel):
+    """One row of the in-Notion review queue: a proposed change the owner decides on."""
+
+    page_id: str
+    status: str = ""  # the Status select the owner sets: Pending / Approved / Rejected
+    url: str = ""
+
+
 def rich(text: str, **annotations: bool | str) -> RichText:
     """Build a single styled run."""
     return RichText(text=text, annotations=Annotations(**annotations))

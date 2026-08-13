@@ -22,6 +22,7 @@ from notion_review.notion.models import (
     ChildrenPage,
     Comment,
     Page,
+    QueueRow,
     RichText,
     split_rich_text,
 )
@@ -132,6 +133,42 @@ class LiveNotionClient:
             created_time=data.get("created_time", ""),
         )
 
+    # -- the in-Notion review queue -------------------------------------------
+    def create_database(
+        self, *, parent_page_id: str, title: str, properties: dict[str, Any]
+    ) -> str:
+        payload = {
+            "parent": {"type": "page_id", "page_id": parent_page_id},
+            "title": [{"type": "text", "text": {"content": title}}],
+            "properties": properties,
+        }
+        data = self._request("POST", "/v1/databases", json=payload).json()
+        return str(data["id"])
+
+    def create_row(self, *, database_id: str, properties: dict[str, Any]) -> QueueRow:
+        payload = {"parent": {"database_id": database_id}, "properties": properties}
+        data = self._request("POST", "/v1/pages", json=payload).json()
+        return QueueRow(page_id=data["id"], status=_row_status(data), url=data.get("url", ""))
+
+    def query_database(self, database_id: str) -> list[QueueRow]:
+        rows: list[QueueRow] = []
+        cursor: str | None = None
+        while True:
+            body: dict[str, Any] = {"page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+            data = self._request("POST", f"/v1/databases/{database_id}/query", json=body).json()
+            rows.extend(
+                QueueRow(page_id=r["id"], status=_row_status(r), url=r.get("url", ""))
+                for r in data.get("results", [])
+            )
+            if not data.get("has_more"):
+                return rows
+            cursor = data.get("next_cursor")
+
+    def update_row(self, *, page_id: str, properties: dict[str, Any]) -> None:
+        self._request("PATCH", f"/v1/pages/{page_id}", json={"properties": properties})
+
     def close(self) -> None:
         self._client.close()
 
@@ -183,6 +220,13 @@ def block_from_json(data: dict[str, Any]) -> Block:
         has_children=data.get("has_children", False),
         meta=meta,
     )
+
+
+def _row_status(data: dict[str, Any]) -> str:
+    """Read a queue row's Status select — the owner's decision, or empty if undecided."""
+    prop = (data.get("properties") or {}).get("Status") or {}
+    select = prop.get("select")
+    return str(select.get("name", "")) if isinstance(select, dict) else ""
 
 
 def page_title(data: dict[str, Any]) -> str:

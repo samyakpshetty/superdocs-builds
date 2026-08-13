@@ -15,6 +15,7 @@ from notion_review.notion.models import (
     ChildrenPage,
     Comment,
     Page,
+    QueueRow,
     RichText,
     plain_text,
 )
@@ -28,6 +29,9 @@ class FakeNotionClient:
         self._blocks: dict[str, Block] = {}  # stored without children resolved
         self._children: dict[str, list[str]] = {}  # parent id -> ordered child ids
         self._comments: list[Comment] = []
+        self._databases: dict[str, list[str]] = {}  # database id -> ordered row ids
+        self._database_titles: dict[str, str] = {}
+        self._rows: dict[str, dict[str, object]] = {}  # row id -> Notion property payloads
         self._counter = 0
 
     # -- construction helpers (tests / demo build the tree with these) ---------
@@ -114,6 +118,51 @@ class FakeNotionClient:
         )
         self._comments.append(comment)
         return comment
+
+    # -- the in-Notion review queue --------------------------------------------
+    def create_database(
+        self, *, parent_page_id: str, title: str, properties: dict[str, object]
+    ) -> str:
+        database_id = self._next("db")
+        self._databases[database_id] = []
+        self._database_titles[database_id] = title
+        return database_id
+
+    def create_row(self, *, database_id: str, properties: dict[str, object]) -> QueueRow:
+        if database_id not in self._databases:
+            raise NotionNotFoundError(f"database not found: {database_id}")
+        page_id = self._next("row")
+        self._rows[page_id] = dict(properties)
+        self._databases[database_id].append(page_id)
+        return QueueRow(page_id=page_id, status=self._status_of(page_id), url=f"/{page_id}")
+
+    def query_database(self, database_id: str) -> list[QueueRow]:
+        if database_id not in self._databases:
+            raise NotionNotFoundError(f"database not found: {database_id}")
+        return [
+            QueueRow(page_id=pid, status=self._status_of(pid), url=f"/{pid}")
+            for pid in self._databases[database_id]
+        ]
+
+    def update_row(self, *, page_id: str, properties: dict[str, object]) -> None:
+        if page_id not in self._rows:
+            raise NotionNotFoundError(f"row not found: {page_id}")
+        self._rows[page_id].update(properties)
+
+    def _status_of(self, page_id: str) -> str:
+        prop = self._rows[page_id].get("Status")
+        if isinstance(prop, dict):
+            select = prop.get("select")
+            if isinstance(select, dict):
+                return str(select.get("name", ""))
+        return ""
+
+    def set_row_status(self, page_id: str, status: str) -> None:
+        """Stand in for the page owner deciding a change in Notion (tests and the demo)."""
+        self.update_row(page_id=page_id, properties={"Status": {"select": {"name": status}}})
+
+    def row_properties(self, page_id: str) -> dict[str, object]:
+        return dict(self._rows[page_id])
 
     # -- introspection for tests -----------------------------------------------
     def _snapshot(self, block_id: str) -> Block:

@@ -24,6 +24,11 @@ from notion_review.roundtrip import (
 )
 from notion_review.roundtrip.checkpoint import open_checkpointer
 from notion_review.roundtrip.inbound import plain_text_from_html
+from notion_review.roundtrip.notion_gate import (
+    await_decisions,
+    publish_pending,
+    record_outcomes,
+)
 from notion_review.sample import demo_page, demo_review_docx
 from notion_review.store import SQLiteStore
 from notion_review.superdocs import FakeSuperDocsClient
@@ -122,6 +127,60 @@ def review(round_id: str, markup: str, state: str, interactive: bool) -> None:
     gate = controller.start(round_id=round_id, docx_bytes=Path(markup).read_bytes())
     click.echo(f"{len(gate.pending)} change(s) proposed.\n")
     final = _run_gates(controller, round_id=round_id, gate=gate, interactive=interactive)
+    _print_outcome(final.proposals, notion)
+    click.echo(f"\n   cost: {final.cost_summary()}")
+    click.secho(f"Round {final.id} finished: {final.status.value}.", fg="green", bold=True)
+
+
+@main.command("review-in-notion")
+@click.option("--round-id", required=True, help="The review round id printed by `send`.")
+@click.option("--markup", required=True, type=click.Path(exists=True), help="The marked-up .docx.")
+@click.option("--state", default=_STATE_DEFAULT, type=click.Path(), help="Round store file.")
+@click.option("--poll", default=15.0, help="Seconds between checks for the owner's decisions.")
+@click.option("--timeout", default=86_400.0, help="Give up waiting after this many seconds.")
+def review_in_notion(round_id: str, markup: str, state: str, poll: float, timeout: float) -> None:
+    """Approve changes inside Notion: each one becomes a row you set to Approved or Rejected.
+
+    The page owner never leaves Notion — no second app, no extra login. This command publishes the
+    queue, waits for the decisions, applies the approved changes, and records each outcome.
+    """
+    config = Config.from_env()
+    setup_logging(config.log_format)
+    notion, superdocs = build_clients(config)
+    store = SQLiteStore(state)
+    controller = InboundController(
+        notion=notion,
+        superdocs=superdocs,
+        store=store,
+        config=config,
+        checkpointer=open_checkpointer(f"{state}.ckpt"),
+    )
+    gate = controller.start(round_id=round_id, docx_bytes=Path(markup).read_bytes())
+    final = gate.round
+    batch = 0
+    while gate.pending:
+        batch += 1
+        added = publish_pending(gate.round, notion, store)
+        click.secho(f"\nBatch {batch}: {added} change(s) waiting in Notion.", fg="cyan", bold=True)
+        click.echo("  Open the “Review queue” database on the page and set each Status.")
+
+        decisions = await_decisions(
+            gate.round,
+            notion,
+            poll_interval_s=poll,
+            timeout_s=timeout,
+            on_wait=lambda done, total: click.echo(f"   … {done}/{total} decided"),
+        )
+        if not decisions:
+            click.secho(
+                "  No decisions yet — stopping; re-run to pick up where you left off.", fg="yellow"
+            )
+            return
+        final = controller.submit(round_id=round_id, decisions=decisions)
+        record_outcomes(final, notion, final.proposals)
+        store.save(final)
+        gate = ReviewGate(round=final, pending=final.pending())
+
     _print_outcome(final.proposals, notion)
     click.echo(f"\n   cost: {final.cost_summary()}")
     click.secho(f"Round {final.id} finished: {final.status.value}.", fg="green", bold=True)
