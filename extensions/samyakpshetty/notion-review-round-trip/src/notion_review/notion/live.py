@@ -218,8 +218,17 @@ class LiveNotionClient:
             with httpx.Client(timeout=httpx.Timeout(60.0), follow_redirects=True) as plain:
                 response = plain.get(url)
                 response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Never the URL in the message: a Notion file URL is pre-signed, so it *is* read access
+            # to that file, and this text reaches a log line and a Notion row.
+            raise NotionError(
+                f"could not download the attached file (HTTP {exc.response.status_code}); "
+                "the link Notion issued may have expired — it will be re-read on the next pass"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise NotionError(f"could not download the attached file: {exc}") from exc
+            raise NotionError(
+                f"could not download the attached file: {type(exc).__name__}"
+            ) from exc
         return response.content
 
     def close(self) -> None:
