@@ -93,7 +93,12 @@ class FakeSuperDocsClient:
     """In-memory implementation of :class:`~notion_review.superdocs.base.SuperDocsClient`."""
 
     def __init__(
-        self, *, monthly_limit: int = 10_000, quota_used: int = 0, fail_chats: int = 0
+        self,
+        *,
+        monthly_limit: int = 10_000,
+        quota_used: int = 0,
+        fail_chats: int = 0,
+        empty_chats: int = 0,
     ) -> None:
         self._sessions: dict[str, _Session] = {}
         self._jobs: dict[str, _JobRecord] = {}
@@ -102,6 +107,9 @@ class FakeSuperDocsClient:
         self._counter = 0
         self._chat_calls = 0
         self._fail_chats = fail_chats  # first N chats return a transient "at capacity" failure
+        # First N chats finish reporting no error and propose nothing at all — the silent
+        # empty result seen live, where the job looks perfectly healthy and did no work.
+        self._empty_chats = empty_chats
 
     # -- helpers ---------------------------------------------------------------
     def _next(self, prefix: str) -> str:
@@ -155,6 +163,18 @@ class FakeSuperDocsClient:
                 metadata={"pending_changes": "[]"},
                 ops_charged=0,
                 error="Instance at graph capacity — did not start; re-submit this request.",
+            )
+            return job_id
+
+        if self._empty_chats > 0:
+            self._empty_chats -= 1
+            self._jobs[job_id] = _JobRecord(
+                job_id=job_id,
+                session_id=session_id,
+                status=JobStatus.COMPLETED,
+                metadata={"pending_changes": "[]"},
+                ops_charged=0,
+                error=None,
             )
             return job_id
 

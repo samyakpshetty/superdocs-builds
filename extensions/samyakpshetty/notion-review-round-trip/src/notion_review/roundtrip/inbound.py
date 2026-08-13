@@ -299,6 +299,16 @@ def _run_superdocs_review(
     job = _chat_with_retry(round_, superdocs, "\n\n".join(parts), config)
     if job is None:
         return []  # the batch failed; reviewer text is still authoritative, so nothing is lost
+    if not job.chunk_diffs:
+        _log.warning(
+            "empty_proposal_set",
+            extra={
+                "round_id": round_.id,
+                "job_id": job.job_id,
+                "status": job.status.value,
+                "asked_for": len(edits) + len(intents),
+            },
+        )
     # Count what this batch cost. The live API does not always return a usage block, and a budget
     # that only counts when the server volunteers a number is no budget at all — so fall back to
     # the documented rule: one operation per request that changed something (a request that errors
@@ -337,10 +347,18 @@ def _match_proposal(
 def _chat_with_retry(
     round_: ReviewRound, superdocs: SuperDocsClient, message: str, config: Config
 ) -> Job | None:
-    """Run the batched chat; re-submit on a transient "engine at capacity" failure, then give up.
+    """Run the batched chat; re-submit a transient failure or an empty result, then give up.
 
-    Giving up is safe: the reviewer's text is written to Notion authoritatively regardless, so this
-    best-effort sync never blocks the review — it just may leave SuperDocs' own copy unsynced.
+    Two things count as worth re-submitting. The first is the explicit "engine at capacity"
+    failure, whose own error text says to try again. The second is subtler and cost us a review
+    once: a job that finishes reporting **no error and no proposals at all**. We only ever ask
+    when we have concrete changes to propose, so nothing to show for it is a failure that simply
+    forgot to say so — and taking it at face value silently downgrades every reviewer comment in
+    the batch to a plain note. Retrying an empty set is free in the one way that matters: a
+    request that changes nothing is not billed.
+
+    Giving up is still safe: the reviewer's text is written to Notion authoritatively regardless,
+    so this best-effort sync never blocks the review — it just may leave SuperDocs' copy unsynced.
     """
     job: Job | None = None
     delay = config.superdocs_backoff_base_s
@@ -351,7 +369,7 @@ def _chat_with_retry(
         except SuperDocsError as exc:
             _log.warning("superdocs_chat_failed", extra={"round_id": round_.id, "error": str(exc)})
             job = None
-        if job is not None and not (job.status == JobStatus.FAILED and _is_transient(job.error)):
+        if job is not None and not _worth_resubmitting(job):
             return job  # healthy result (or a non-transient failure we won't retry)
         if attempt < config.superdocs_chat_retries:
             _log.info(
@@ -360,11 +378,19 @@ def _chat_with_retry(
                     "round_id": round_.id,
                     "attempt": attempt + 1,
                     "error": job.error if job else None,
+                    "why": "empty" if job is not None and not job.chunk_diffs else "failed",
                 },
             )
             time.sleep(delay)
             delay *= 2
     return job
+
+
+def _worth_resubmitting(job: Job) -> bool:
+    """Whether this result is one to try again rather than accept."""
+    if job.status == JobStatus.FAILED:
+        return _is_transient(job.error)
+    return not job.chunk_diffs  # finished, said nothing was wrong, proposed nothing
 
 
 def _is_transient(error: str | None) -> bool:

@@ -636,3 +636,40 @@ def test_resubmitting_a_decision_leaves_an_applied_change_applied() -> None:
 
     assert [p.status.value for p in final.proposals] == ["applied", "applied"]
     assert "Q4" in notion.block_text(aurora.notion_block_id)
+
+
+def test_a_chat_that_proposes_nothing_at_all_is_re_submitted() -> None:
+    # Seen live: a job finishes reporting no error and returns an empty proposal set. Taken at
+    # face value it silently downgrades every reviewer comment in the batch to a plain note, so
+    # it is re-submitted rather than believed.
+    notion, page_id = FakeNotionClient.build_sample()
+    superdocs = FakeSuperDocsClient(empty_chats=2)  # first two chats come back empty and healthy
+    store = SQLiteStore()
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    fast = Config(superdocs_backoff_base_s=0.001)
+    controller = InboundController(notion=notion, superdocs=superdocs, store=store, config=fast)
+
+    gate = controller.start(round_id=round_id, docx_bytes=comment_intent_docx())
+
+    assert superdocs.chat_calls() == 3  # two empty results re-submitted, the third proposed
+    authored = [p for p in gate.pending if p.source == ChangeSource.COMMENT_INTENT]
+    assert authored, "the reviewer's comment should have become an AI-authored edit"
+    assert authored[0].change_id  # and it carries a change id to approve against
+
+
+def test_an_empty_proposal_set_that_never_recovers_still_keeps_the_reviewer_comment() -> None:
+    # The retry is bounded. When it is exhausted the comment is kept as an attributed note —
+    # degraded, but a reviewer's words are never dropped.
+    notion, page_id = FakeNotionClient.build_sample()
+    superdocs = FakeSuperDocsClient(empty_chats=99)
+    store = SQLiteStore()
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    fast = Config(superdocs_backoff_base_s=0.001)
+    controller = InboundController(notion=notion, superdocs=superdocs, store=store, config=fast)
+
+    gate = controller.start(round_id=round_id, docx_bytes=comment_intent_docx())
+
+    kept = [p for p in gate.pending if p.source == ChangeSource.COMMENT]
+    assert kept and INTENT_COMMENT in kept[0].reviewer_comment
