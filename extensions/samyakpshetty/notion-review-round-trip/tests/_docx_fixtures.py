@@ -134,6 +134,30 @@ def rival_reviewer_docx() -> bytes:
     return paragraph_insert_docx(PARA_ORIGINAL, RIVAL_INSERT, SECOND_REVIEWER)
 
 
+def two_tracked_changes_docx() -> bytes:
+    """Two tracked changes in one file — so both proposals come from a single chat job."""
+    date = "2026-08-14T10:00:00Z"
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p>"
+        f'<w:r><w:t xml:space="preserve">{_HEAD}</w:t></w:r>'
+        f'<w:del w:id="1" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:delText xml:space="preserve">Q3</w:delText></w:r></w:del>'
+        f'<w:ins w:id="2" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve">Q4</w:t></w:r></w:ins>'
+        f'<w:r><w:t xml:space="preserve">{_TAIL}</w:t></w:r>'
+        f"</w:p>"
+        f"<w:p>"
+        f'<w:r><w:t xml:space="preserve">{COMMENTED_PARA}</w:t></w:r>'
+        f'<w:ins w:id="3" w:author="{CHANGE_AUTHOR}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve">{OTHER_PARA_INSERT}</w:t></w:r></w:ins>'
+        f"</w:p>"
+        f"</w:body></w:document>"
+    )
+    return build_docx(document)
+
+
 # Two identical paragraphs where only the SECOND is edited — for positional matching.
 DUP_TEXT = "Repeat me exactly."
 DUP_MIDDLE = "A different middle line."

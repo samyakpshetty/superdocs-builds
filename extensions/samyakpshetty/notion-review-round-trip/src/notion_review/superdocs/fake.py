@@ -24,7 +24,7 @@ from lxml import html as lxml_html
 from lxml.html import HtmlElement
 
 from notion_review.domain import ChangeOperation
-from notion_review.superdocs.base import parse_pending_changes
+from notion_review.superdocs.base import SuperDocsError, parse_pending_changes
 from notion_review.superdocs.chunking import iter_block_elements
 from notion_review.superdocs.docx import html_to_docx
 from notion_review.superdocs.instructions import parse_instructions, parse_intents
@@ -265,6 +265,16 @@ class FakeSuperDocsClient:
         self, *, session_id: str, decisions: list[ApprovalDecision], job_id: str = ""
     ) -> ApproveResult:
         session = self._sessions.get(session_id)
+        # Approving closes the job, and the live API refuses a second call for the rest of its
+        # changes. Reproduced here so a caller that tries cannot pass the offline suite and then
+        # fail against the real thing.
+        if job_id:
+            record = self._jobs.get(job_id)
+            if record is not None and record.status != JobStatus.AWAITING_APPROVAL:
+                raise SuperDocsError(
+                    f"POST /v1/chat/{session_id}/approve -> 400: "
+                    f'{{"detail":"Job is not awaiting approval (status: {record.status.value})"}}'
+                )
         applied = denied = 0
         by_change = {d.change_id: d for d in decisions}  # approve keys on change_id, not chunk_id
         for record in self._jobs.values():

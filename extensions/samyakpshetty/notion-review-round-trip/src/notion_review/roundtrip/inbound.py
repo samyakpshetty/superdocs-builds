@@ -483,12 +483,25 @@ def _relay_to_superdocs_approve(round_: ReviewRound, superdocs: SuperDocsClient)
     authoritative write is still the Notion write-back, so a transport failure here is logged and
     the round proceeds — the source of truth is never left inconsistent.
     """
+    # SuperDocs closes a job the moment it is approved: a second call for the rest of that job's
+    # changes is refused with "Job is not awaiting approval (status: completed)". We get exactly
+    # one call per job, so a job's decisions are held until every change it proposed has been
+    # decided — spending the call early would strand the remainder, and the owner deciding a
+    # queue over hours rather than all at once is the normal case, not the exception.
+    undecided_jobs = {
+        p.job_id for p in round_.proposals if p.status == ProposalStatus.PENDING and p.job_id
+    }
+    # "Decided" is anything past the gate, not only the two statuses a change holds for the instant
+    # between the decision and the write. A change held back waiting for its siblings has already
+    # been written to Notion by the time they arrive, so it is APPLIED — and looking only for
+    # APPROVED would silently never relay it.
     decided = [
         p
         for p in round_.proposals
         if p.change_id
         and not p.relayed
-        and p.status in (ProposalStatus.APPROVED, ProposalStatus.REJECTED)
+        and p.job_id not in undecided_jobs
+        and p.status != ProposalStatus.PENDING
     ]
     if not decided:
         return
@@ -500,8 +513,11 @@ def _relay_to_superdocs_approve(round_: ReviewRound, superdocs: SuperDocsClient)
         by_job.setdefault(proposal.job_id, []).append(proposal)
 
     for job_id, group in by_job.items():
+        # What we relay is the human's decision, not what became of the write. A change the owner
+        # approved that then hit a drift conflict was still approved; SuperDocs' own copy should
+        # reflect the decision it was given.
         decisions = [
-            ApprovalDecision(change_id=p.change_id, approved=p.status == ProposalStatus.APPROVED)
+            ApprovalDecision(change_id=p.change_id, approved=p.status != ProposalStatus.REJECTED)
             for p in group
         ]
         try:

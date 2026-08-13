@@ -128,7 +128,11 @@ Where the brief or the API was silent, I made a call and recorded it.
 11. **Notion's button block is the trigger.** It cannot be created through the public API, but a
     person can add one pointed at the requests database, which is what makes the whole cycle a
     single click without the integration pretending to something the API does not offer.
-12. **Which boards to serve is a fact about the workspace, not the deployment.** Configuring a
+12. **SuperDocs' `approve` is one call per job.** Approving closes the job, and a second call
+    for the rest of that job's changes is refused with *"Job is not awaiting approval"*. An
+    owner deciding a queue over hours is the normal case, so a job's decisions are held until
+    every change it proposed has been decided, then sent once. Verified live.
+13. **Which boards to serve is a fact about the workspace, not the deployment.** Configuring a
     database id would mean editing an environment file and restarting a service every time a
     team started using this — which is not a shape that survives production. Notion's search
     returns exactly what has been shared with the connection, so discovery is both the right

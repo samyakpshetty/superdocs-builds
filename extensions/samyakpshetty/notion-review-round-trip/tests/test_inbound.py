@@ -28,6 +28,7 @@ from _docx_fixtures import (
     reviewed_docx,
     rival_reviewer_docx,
     second_reviewer_docx,
+    two_tracked_changes_docx,
     unchanged_docx,
 )
 from notion_review.config import Config
@@ -673,3 +674,32 @@ def test_an_empty_proposal_set_that_never_recovers_still_keeps_the_reviewer_comm
 
     kept = [p for p in gate.pending if p.source == ChangeSource.COMMENT]
     assert kept and INTENT_COMMENT in kept[0].reviewer_comment
+
+
+def test_a_jobs_decisions_are_relayed_once_all_of_them_are_in() -> None:
+    # SuperDocs closes a job the moment it is approved, and refuses a second call for the rest of
+    # its changes. Deciding a queue over hours is the normal case, so the call is held until every
+    # change from that job has been decided — spending it early would strand the remainder.
+    _, _, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=two_tracked_changes_docx())
+    with_change_id = [p for p in gate.pending if p.change_id]
+    assert len(with_change_id) == 2  # both proposed by the same chat job
+    assert len({p.job_id for p in with_change_id}) == 1
+
+    # Only some of the job's changes decided: nothing may be relayed yet.
+    controller.submit(
+        round_id=round_id,
+        decisions=[{"proposal_id": with_change_id[0].id, "approved": True}],
+    )
+    partial = store.get(round_id)
+    assert partial is not None
+    assert not any(p.relayed for p in partial.proposals)
+
+    # Now the rest — one call, and it must not raise the live 400.
+    final = controller.submit(
+        round_id=round_id,
+        decisions=[{"proposal_id": p.id, "approved": True} for p in partial.pending()],
+    )
+
+    assert all(p.relayed for p in final.proposals if p.change_id)
+    assert final.status == RoundStatus.COMPLETED
