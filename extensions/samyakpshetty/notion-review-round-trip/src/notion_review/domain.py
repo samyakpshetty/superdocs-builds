@@ -96,6 +96,7 @@ class ProposedChange(BaseModel):
     links: list[str] = Field(default_factory=list)  # URLs the edit introduces; shown at the gate
     relayed: bool = False  # this decision has been sent to SuperDocs' approve (never sent twice)
     queue_row_id: str = ""  # the Notion review-queue row the owner decides this change in
+    queue_row_url: str = ""  # link to that row, so the comment on the line is one click from it
     discussion_id: str = ""  # the comment thread on the block, where the owner can reply instead
     status: ProposalStatus = ProposalStatus.PENDING
     error: str | None = None

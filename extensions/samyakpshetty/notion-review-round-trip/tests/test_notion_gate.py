@@ -115,6 +115,24 @@ def test_each_change_is_announced_on_the_block_it_would_edit() -> None:
     assert gate.round.bot_user_id  # we know our own voice, to tell a reply from our card
 
 
+def test_the_comment_on_the_line_links_straight_to_its_queue_row() -> None:
+    # Deciding should be a click, not a sentence: the comment carries a link to the row.
+    notion, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    publish_pending(gate.round, notion, store)  # rows first, so their links exist
+    announce_inline(gate.round, notion, store)
+
+    proposal = gate.round.pending()[0]
+    card = next(
+        c
+        for c in notion.list_comments(proposal.notion_block_id)
+        if c.discussion_id == proposal.discussion_id
+    )
+    linked = [run for run in card.rich_text if run.href]
+    assert linked and linked[0].href == proposal.queue_row_url
+    assert "Approve or reject" in linked[0].text
+
+
 def test_announcing_twice_does_not_repeat_the_comment() -> None:
     notion, store, controller, round_id = _setup()
     gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())

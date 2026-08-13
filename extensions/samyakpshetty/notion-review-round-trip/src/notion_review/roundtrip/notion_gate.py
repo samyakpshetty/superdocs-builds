@@ -27,7 +27,7 @@ from collections.abc import Callable
 from notion_review.domain import ChangeSource, ProposedChange, ReviewRound
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
-from notion_review.notion.models import plain_text
+from notion_review.notion.models import RichText, plain_text
 from notion_review.notion.queue_schema import (
     STATUS_PENDING,
     decision_from_status,
@@ -86,6 +86,7 @@ def publish_pending(round_: ReviewRound, notion: NotionClient, store: Store) -> 
             ),
         )
         proposal.queue_row_id = row.page_id
+        proposal.queue_row_url = row.url
         added += 1
     store.save(round_)
     _log.info("queue_published", extra={"round_id": round_.id, "rows": added})
@@ -113,8 +114,7 @@ def announce_inline(round_: ReviewRound, notion: NotionClient, store: Store) -> 
         if proposal.source == ChangeSource.COMMENT:
             body = (
                 f"{proposal.reviewer_name} asked, in review round {round_.id}: "
-                f"“{proposal.reviewer_comment}”. Reply approve to keep this note on the page, "
-                f"or reject to drop it."
+                f"“{proposal.reviewer_comment}” · "
             )
         else:
             authored = (
@@ -122,15 +122,20 @@ def announce_inline(round_: ReviewRound, notion: NotionClient, store: Store) -> 
                 if (proposal.source == ChangeSource.COMMENT_INTENT)
                 else ""
             )
-            body = (
-                f"{proposal.reviewer_name} proposes{authored}: “{before}” → “{after}”. "
-                f"Reply approve or reject."
-            )
+            body = f"{proposal.reviewer_name} proposes{authored}: “{before}” → “{after}” · "
+        # One click to decide: the comment links straight to this change's row in the queue, where
+        # Status is a two-click select. Replying "approve" or "reject" here works too, for anyone
+        # who would rather answer in the thread than open the row.
+        card = [RichText(text=body)]
+        if proposal.queue_row_url:
+            card.append(RichText(text="Approve or reject →", href=proposal.queue_row_url))
+        else:
+            card.append(RichText(text="Reply approve or reject."))
         try:
             comment = notion.create_comment(
                 block_id=proposal.notion_block_id,
                 page_id=proposal.notion_page_id or round_.notion_page_id or None,
-                rich_text=plain_text(body),
+                rich_text=card,
             )
         except NotionError as exc:
             _log.warning(

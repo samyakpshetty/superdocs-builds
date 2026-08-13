@@ -154,13 +154,17 @@ class FakeNotionClient:
         page_id = self._next("row")
         self._rows[page_id] = dict(properties)
         self._databases[database_id].append(page_id)
-        return QueueRow(page_id=page_id, status=self._status_of(page_id), url=f"/{page_id}")
+        return QueueRow(
+            page_id=page_id,
+            status=self._status_of(page_id),
+            url=f"https://notion.so/{page_id}",
+        )
 
     def query_database(self, database_id: str) -> list[QueueRow]:
         if database_id not in self._databases:
             raise NotionNotFoundError(f"database not found: {database_id}")
         return [
-            QueueRow(page_id=pid, status=self._status_of(pid), url=f"/{pid}")
+            QueueRow(page_id=pid, status=self._status_of(pid), url=f"https://notion.so/{pid}")
             for pid in self._databases[database_id]
         ]
 
