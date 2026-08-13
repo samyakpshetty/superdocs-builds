@@ -150,6 +150,13 @@ Where the brief or the API was silent, I made a call and recorded it.
 - **An outside reviewer still needs sending the file.** Inside the workspace the loop is
   hands-free. For a reviewer with no Notion access the owner forwards the document from the row and
   puts the reply back on it — one human hop, which email would close.
+- **The SQLite store is single-writer.** It deliberately does not use write-ahead logging:
+  WAL keeps committed rows in a side file coordinated through shared memory, and that
+  coordination is not reliable on the bind mounts this runs on — a second connection can
+  conclude it is the last one and delete the side file out from under a live writer. Postgres
+  is the backend for anything that wants more than one process.
+- **A toggle's title never reconciles to a chunk**, so `unmapped_blocks` is expected on any
+  page with a toggle. The log now names which blocks and why rather than reporting a count.
 - **Notion caps an attachment at 5 MiB on a free workspace.** Prose pages export far below it; a
   very large document would need the folder channel.
 - **Two reviewers editing one paragraph in the same file** are merged by Word into a single

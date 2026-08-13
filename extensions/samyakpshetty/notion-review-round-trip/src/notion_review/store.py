@@ -64,7 +64,15 @@ class SQLiteStore:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         if path != ":memory:":
-            self._conn.execute("PRAGMA journal_mode=WAL")
+            # Deliberately NOT write-ahead logging. WAL keeps committed data in a side file
+            # coordinated through shared memory, and that coordination is not reliable on the
+            # bind mounts this runs on: a second connection can conclude it is the last one and
+            # delete the -wal out from under a live writer, discarding committed rounds without
+            # an error anywhere. I hit exactly that. The rollback journal has no side files to
+            # lose, which trades some write concurrency for the store actually being durable —
+            # and concurrency is what the Postgres backend is for.
+            self._conn.execute("PRAGMA journal_mode=DELETE")
+            self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.execute(_DDL.format(json_type="TEXT"))
         # Migrate a store created before the version column existed.
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(review_rounds)")}

@@ -131,9 +131,21 @@ def send_packet_for_review(
     matched = reconcile_chunks(upload.html, round_.block_map)
     round_.sent_version_id = upload.version_id
     if matched < len(block_map):
+        # Say *which* blocks, because the usual answer is a known structural loss rather than a
+        # fault: SuperDocs drops a toggle's summary text on upload, so a toggle title has no chunk
+        # to reconcile against. A bare count reads like a failure and tells an operator nothing.
+        missing = [entry for entry in block_map if not entry.chunk_id]
         _log.warning(
             "unmapped_blocks",
-            extra={"round_id": round_.id, "matched": matched, "total": len(block_map)},
+            extra={
+                "round_id": round_.id,
+                "matched": matched,
+                "total": len(block_map),
+                "unmapped": [
+                    {"type": entry.block_type, "text": entry.original_text[:60]}
+                    for entry in missing[:5]
+                ],
+            },
         )
 
     docx = superdocs.export(session_id=round_.session_id, fmt="docx")

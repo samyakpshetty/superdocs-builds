@@ -194,3 +194,24 @@ def test_a_round_survives_the_process_that_created_it(tmp_path) -> None:  # type
     assert [r for r in reopened.list_ids()] == [round_.id]
     assert reopened.get(round_.id) is not None
     reopened.close()
+
+
+def test_a_file_store_keeps_its_data_in_the_database_not_a_side_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # Write-ahead logging keeps committed rows in a -wal coordinated through shared memory, and
+    # that coordination is not reliable on a bind mount: a second connection can decide it is the
+    # last one and delete the -wal out from under a live writer, losing committed rounds silently.
+    # No side files means there is nothing to lose that way.
+    path = tmp_path / "state.db"
+    store = SQLiteStore(str(path))
+    store.save(ReviewRound(notion_page_id="page-1"))
+
+    mode = store._conn.execute("pragma journal_mode").fetchone()[0]
+    assert mode != "wal"
+    assert not (tmp_path / "state.db-wal").exists()
+    assert not (tmp_path / "state.db-shm").exists()
+
+    # And the row is readable by an unrelated connection the moment it is committed.
+    other = SQLiteStore(str(path))
+    assert len(other.list_ids()) == 1
+    other.close()
+    store.close()
