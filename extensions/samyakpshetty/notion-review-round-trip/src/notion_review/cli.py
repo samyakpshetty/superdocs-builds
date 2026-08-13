@@ -110,7 +110,11 @@ def send(page_ids: tuple[str, ...], out: str, state: str) -> None:
     packet = send_packet_for_review(
         notion=notion, superdocs=superdocs, store=store, page_ids=list(page_ids)
     )
-    destination = Path(out) if out else Path(f"review-{packet.round.id}.docx")
+    # Into outbox/ by default, because that is a directory the host can see. Writing beside the
+    # working directory looked fine and destroyed the file with the container: the command runs
+    # under `docker compose run --rm`, and a document nobody can open is not a document sent.
+    destination = Path(out) if out else Path("outbox") / f"review-{packet.round.id}.docx"
+    destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(stamp_round_id(packet.docx.content, packet.round.id))
     click.secho(f"Sent for review. round={packet.round.id}", fg="green", bold=True)
     click.echo(

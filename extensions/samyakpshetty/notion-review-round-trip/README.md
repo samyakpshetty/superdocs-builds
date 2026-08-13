@@ -16,8 +16,9 @@ reports `3 applied, 1 rejected, 2 skipped (page changed since review)`.*
 
 ## What it does
 
-1. **A review starts with one button in Notion.** A *Send for review* button on the page adds a row
-   to a *Review requests* database. No terminal, no commands, no second app.
+1. **A review starts in Notion.** A row in a *Review requests* database — the page, and who should
+   review it — is the whole trigger. Put a Notion **Button** on the page and it becomes one click.
+   No terminal, no commands, no second app.
 2. **SuperDocs turns the page into a styled `.docx`**, and it appears attached to that same row,
    moments later. The file carries its own review-round id, so however it travels it finds its way
    home.
@@ -109,15 +110,17 @@ to the four calls, and an MCP surface over the same controller would be a small 
   **Back**: that `.docx` with tracked changes (`w:ins`, `w:del`, `w:moveFrom`/`w:moveTo`, including
   revisions nested inside hyperlinks) and comments, from any Word-compatible editor.
 - **Structures preserved across the round-trip**: headings, paragraphs, quotes, bulleted and
-  numbered lists, to-dos, code blocks, toggles, callouts, tables, inline databases, and rich text
-  (bold, italic, links, colour).
+  numbered lists, to-dos, code blocks, callouts, tables, inline databases, and rich text (bold,
+  italic, links, colour). A toggle's *contents* make the round-trip; its title does not, because
+  SuperDocs drops the summary on upload (see Limitations).
 - **Domain**: any prose document a team keeps in Notion and sends for formal review — a PRD, a
   launch plan, a policy, a client deliverable, a contract summary.
 - A second run means a different Notion page and different reviewer markup within that shape.
 
 ## Running it
 
-Everything runs in Docker, so local matches CI byte for byte.
+Everything runs in Docker, so the checks below behave the same on any machine — the container
+pins the Python and every tool version.
 
 ```bash
 make demo    # the whole round-trip on deterministic fakes — no keys, no API calls, no cost
@@ -151,7 +154,8 @@ start the service. Nothing is configured afterwards and nobody touches a termina
 docker compose run --rm --no-deps app python -m notion_review.cli \
     init-requests --parent-page-id <a page shared with the integration>
 
-make watch     # add `--once` under cron for a scheduled job instead of a long-running process
+make watch                 # a long-running service
+make watch ARGS=--once     # a single pass, for cron
 ```
 
 **Boards are found, not configured.** The service serves every *Review requests* database that has
@@ -190,8 +194,8 @@ promise something the system cannot keep.
 trying it once, for CI, or for debugging without setting up the requests database:
 
 ```bash
-make send PAGE=<notion-page-id>      # writes review-<round>.docx, stamped with its round id
-make review FILE=<returned.docx>     # approve each change in the terminal, y/n
+make send PAGE=<notion-page-id>        # writes outbox/review-<round>.docx, stamped
+make review FILE=inbox/<returned.docx> # approve each change in the terminal, y/n
 make status                          # what every round is doing (ROUND=<id> for one in full)
 ```
 
@@ -210,6 +214,12 @@ Where the brief or the API was silent, I made a call and recorded it here.
   before the next — which is also the card's *"one approval at a time"*.
 - **`approve` keys each change on `change_id`, not the documented `chunk_id`** (which returns a
   500). Reverse-engineered and verified against the live API.
+- **`approve` is one call per job.** Approving closes the job, and a second call for the rest of
+  that job's changes is refused. An owner decides a queue over hours, not all at once, so a job's
+  decisions are held until every change it proposed has been decided, then sent once.
+- **An empty proposal set is a failure, not an answer.** A chat can finish reporting no error and
+  propose nothing at all; believed, it silently demotes every AI-authored edit in the batch to a
+  plain note. We only ask when we have concrete changes in hand, so nothing back is re-submitted.
 - **A reviewer's question is never sent to the AI.** A comment ending in "?" goes to the page owner
   instead, so the AI can't fabricate an answer into the document. Deliberately conservative, with
   the human gate as the backstop.
@@ -255,7 +265,7 @@ Where the brief or the API was silent, I made a call and recorded it here.
   at the gate; oversized edits are refused; content lands as text, never as markup.
 - **No secret in code, logs, or history.** Every log line is scrubbed of tokens before it's emitted.
 
-155 tests run without an API key, plus a Postgres-backed store test. I verified the one-command
+164 tests run without an API key, plus a Postgres-backed store test. I verified the one-command
 claim by cloning the repository fresh, with no `.env`.
 
 ## Limitations

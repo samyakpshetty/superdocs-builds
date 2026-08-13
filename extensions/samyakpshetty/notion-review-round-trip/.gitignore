@@ -23,14 +23,11 @@ htmlcov/
 *.docx
 artifacts/
 scratch/
-# The working directories are tracked as empty so a fresh clone has them mounted and ready;
-# nothing that lands inside them is ever committed.
-inbox/*
-!inbox/.gitkeep
-outbox/*
-!outbox/.gitkeep
-data/*
-!data/.gitkeep
+# Runtime directories. Docker creates them on first run, so they are not tracked: data/ holds
+# the round store and the graph checkpoint, and inbox/ + outbox/ are the folder channel.
+inbox/
+outbox/
+data/
 
 # OS / editor
 .DS_Store

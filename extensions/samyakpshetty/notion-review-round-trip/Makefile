@@ -38,14 +38,14 @@ demo: build ## Full round-trip on the fake providers — no keys, no ops, no Pos
 # --- Live targets. All need SUPERDOCS_API_KEY + NOTION_TOKEN in .env ---
 LIVE := PROVIDER=live $(COMPOSE) run --rm --no-deps app python -m notion_review.cli
 
-send: build ## Send a page for review: make send PAGE=<notion-page-id>
+send: build ## Send a page for review: make send PAGE=<notion-page-id> (lands in outbox/)
 	$(LIVE) send --page-id $(PAGE)
 
-review: build ## Apply a returned review: make review FILE=<marked-up.docx>
+review: build ## Apply a returned review: make review FILE=inbox/<marked-up.docx>
 	$(LIVE) review --markup $(FILE) --interactive
 
-watch: build ## Run the service: requests are sent, returned files applied, unattended
-	$(LIVE) watch --inbox inbox --outbox outbox
+watch: build ## Run the service unattended (ARGS=--once for a single pass, e.g. under cron)
+	$(LIVE) watch --inbox inbox --outbox outbox $(ARGS)
 
 status: build ## What every review round is doing (add ROUND=<id> for one in full)
 	$(LIVE) status $(if $(ROUND),--round-id $(ROUND),)

@@ -13,7 +13,7 @@ preserving structure and reviewer attribution throughout.
 ## Status
 
 Complete, and proven end to end on both the deterministic providers and the live services.
-**155 tests that need no API key**, plus a Postgres-backed store test; `ruff`, `mypy --strict` and
+**164 tests that need no API key**, plus a Postgres-backed store test; `ruff`, `mypy --strict` and
 `pytest` all green. I verified the one-command claim by cloning the repository fresh, with no
 `.env`: `make check` and `make demo` both run unchanged.
 
@@ -46,7 +46,7 @@ Two live runs are worth naming because they are the claims most easily asserted 
   comment is handed to SuperDocs' AI, which *authors* the concrete edit and returns it with an
   explanation. All four contract calls are exercised: upload, chat, approve, export.
 - **One headless gate, three drivers**: a review queue *in Notion*, a comment on the changed line
-  itself, and a terminal gate for CI or an agent. Decisions from any of them are merged.
+  itself, and a terminal gate for a script or an agent. Decisions from any of them are merged.
 - **Boards are discovered, not configured.** Every *Review requests* database shared with the
   integration is served. Notion's search returns only what someone shared with the connection,
   so sharing a board switches a team on and unsharing switches it off; no id is ever configured,
@@ -128,11 +128,15 @@ Where the brief or the API was silent, I made a call and recorded it.
 11. **Notion's button block is the trigger.** It cannot be created through the public API, but a
     person can add one pointed at the requests database, which is what makes the whole cycle a
     single click without the integration pretending to something the API does not offer.
-12. **SuperDocs' `approve` is one call per job.** Approving closes the job, and a second call
+12. **An empty proposal set is a failure, not an answer.** A chat can finish reporting no error
+    and propose nothing at all. Believed, it silently demotes every AI-authored edit in the
+    batch to a plain note — which is exactly what happened on a live round. We only ask when we
+    have concrete changes in hand, so nothing back is re-submitted under the same bounded retry.
+13. **SuperDocs' `approve` is one call per job.** Approving closes the job, and a second call
     for the rest of that job's changes is refused with *"Job is not awaiting approval"*. An
     owner deciding a queue over hours is the normal case, so a job's decisions are held until
     every change it proposed has been decided, then sent once. Verified live.
-13. **Which boards to serve is a fact about the workspace, not the deployment.** Configuring a
+14. **Which boards to serve is a fact about the workspace, not the deployment.** Configuring a
     database id would mean editing an environment file and restarting a service every time a
     team started using this — which is not a shape that survives production. Notion's search
     returns exactly what has been shared with the connection, so discovery is both the right
@@ -145,7 +149,8 @@ Where the brief or the API was silent, I made a call and recorded it.
   `.docx` with tracked changes and comments comes back. A second run means different Notion pages
   and different reviewer markup within that shape.
 - **Structures carried across the round-trip**: headings, paragraphs, quotes, bulleted and numbered
-  lists, to-dos, code, toggles, callouts, tables, and inline databases.
+  lists, to-dos, code, callouts, tables, and inline databases. A toggle's *contents* survive; its
+  title does not, because SuperDocs drops the summary on upload.
 
 ## Limitations
 
@@ -159,8 +164,6 @@ Where the brief or the API was silent, I made a call and recorded it.
   coordination is not reliable on the bind mounts this runs on — a second connection can
   conclude it is the last one and delete the side file out from under a live writer. Postgres
   is the backend for anything that wants more than one process.
-- **A toggle's title never reconciles to a chunk**, so `unmapped_blocks` is expected on any
-  page with a toggle. The log now names which blocks and why rather than reporting a count.
 - **Notion caps an attachment at 5 MiB on a free workspace.** Prose pages export far below it; a
   very large document would need the folder channel.
 - **Two reviewers editing one paragraph in the same file** are merged by Word into a single
@@ -168,8 +171,10 @@ Where the brief or the API was silent, I made a call and recorded it.
 - **Table cells cannot be targeted individually.** SuperDocs re-chunks a whole table as one unit on
   upload, so an edit aimed at a single cell cannot be isolated back to that cell. It is surfaced
   rather than guessed at.
-- **A toggle's summary text is dropped by SuperDocs on upload**, so an edit to a toggle title
-  cannot round-trip. Both of these are SuperDocs-side and reported as bugs.
+- **A toggle's summary text is dropped by SuperDocs on upload**, so a toggle title has no chunk
+  to reconcile against and an edit to one cannot round-trip. `unmapped_blocks` is therefore
+  expected on any page holding a toggle; the log names which blocks and why. This and the table
+  limitation above are both SuperDocs-side, and reported as bugs.
 - **Decisions apply within one poll interval** (fifteen seconds by default), not instantly.
 - **No notifications**: the page is commented and updated, but nobody is emailed.
 
