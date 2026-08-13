@@ -13,7 +13,7 @@ from pathlib import Path
 
 import click
 
-from notion_review.clients import build_clients
+from notion_review.clients import build_clients, build_delivery
 from notion_review.config import Config
 from notion_review.docx_markup.stamp import identify_round, stamp_round_id
 from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange, ReviewRound
@@ -34,6 +34,7 @@ from notion_review.roundtrip.notion_gate import (
     publish_pending,
     record_outcomes,
 )
+from notion_review.roundtrip.requests import create_request_database
 from notion_review.roundtrip.service import ReviewService
 from notion_review.sample import demo_page, demo_review_docx
 from notion_review.store import SQLiteStore
@@ -202,6 +203,27 @@ def review_in_notion(round_id: str, markup: str, state: str, poll: float, timeou
     click.secho(f"Round {final.id} finished: {final.status.value}.", fg="green", bold=True)
 
 
+@main.command("init-requests")
+@click.option(
+    "--parent-page-id",
+    required=True,
+    help="A Notion page you have shared with the integration; the database is created under it.",
+)
+def init_requests(parent_page_id: str) -> None:
+    """Create the Review requests database — how a team starts a review without a terminal.
+
+    Someone adds a row (the page to review, who should review it), sets Status to Requested, and
+    the service sends it out. Put the id this prints in NOTION_REQUESTS_DB.
+    """
+    config = Config.from_env()
+    setup_logging(config.log_format)
+    notion, _ = build_clients(config)
+    database_id = create_request_database(notion, parent_page_id=parent_page_id)
+    click.secho("Review requests database created.", fg="green", bold=True)
+    click.echo(f"  NOTION_REQUESTS_DB={database_id}")
+    click.echo("  Add a row with the page id or URL, the reviewers' emails, Status = Requested.")
+
+
 @main.command()
 @click.option(
     "--inbox",
@@ -209,15 +231,21 @@ def review_in_notion(round_id: str, markup: str, state: str, poll: float, timeou
     type=click.Path(),
     help="Folder returned reviews land in (a synced Drive/Dropbox folder works).",
 )
+@click.option(
+    "--outbox",
+    default="outbox",
+    type=click.Path(),
+    help="Where requested documents are delivered when no mail server is configured.",
+)
 @click.option("--state", default=_STATE_DEFAULT, type=click.Path(), help="Round store file.")
 @click.option("--interval", default=15.0, help="Seconds between passes.")
 @click.option("--once", is_flag=True, help="Run a single pass and exit (for cron).")
-def watch(inbox: str, state: str, interval: float, once: bool) -> None:
-    """Run the review service: returned files are picked up and driven to completion on their own.
+def watch(inbox: str, outbox: str, state: str, interval: float, once: bool) -> None:
+    """Run the review service: reviews are sent, taken in, and driven to completion on their own.
 
-    A reviewer's file arriving is the trigger. Each one is matched to its round, proposed through
-    SuperDocs, and queued in Notion for the page owner; their decisions are read back and applied.
-    Nobody runs a command per review.
+    A request row in Notion sends a page out; a reviewer's file arriving is matched to its round,
+    proposed through SuperDocs, and queued in Notion for the page owner; their decisions are read
+    back and applied. Nobody runs a command per review.
     """
     config = Config.from_env()
     setup_logging(config.log_format)
@@ -230,11 +258,18 @@ def watch(inbox: str, state: str, interval: float, once: bool) -> None:
         store=store,
         config=config,
         checkpointer=open_checkpointer(f"{state}.ckpt"),
+        delivery=build_delivery(config, outbox),
+        requests_database_id=config.notion_requests_database_id,
     )
     click.secho(f"Watching {inbox}/ for returned reviews…", fg="cyan", bold=True)
-    click.echo("  Drop a marked-up .docx in; it is matched, proposed, and queued in Notion.")
+    if config.notion_requests_database_id:
+        click.echo("  Requests in Notion send pages out; returned files are matched and queued.")
+    else:
+        click.echo("  Drop a marked-up .docx in; it is matched, proposed, and queued in Notion.")
     while True:
         report = service.tick()
+        for round_id in report.sent:
+            click.secho(f"  ✓ sent {round_id} out for review", fg="green")
         for round_id in report.ingested:
             click.secho(f"  ✓ took in a review for {round_id}", fg="green")
         for name in report.rejected:

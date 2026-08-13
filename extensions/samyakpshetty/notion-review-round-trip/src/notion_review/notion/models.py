@@ -7,6 +7,8 @@ metadata (a callout's icon/colour, a code block's language), and its children.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 # Block types the integration understands. Anything else round-trips as an opaque block:
@@ -98,11 +100,12 @@ class DatabaseRef(BaseModel):
 
 
 class QueueRow(BaseModel):
-    """One row of the in-Notion review queue: a proposed change the owner decides on."""
+    """One row of an in-Notion database: a proposed change, or a request to start a review."""
 
     page_id: str
     status: str = ""  # the Status select the owner sets: Pending / Approved / Rejected
     url: str = ""
+    properties: dict[str, Any] = Field(default_factory=dict)  # the row as Notion returned it
 
 
 def rich(text: str, **annotations: bool | str) -> RichText:

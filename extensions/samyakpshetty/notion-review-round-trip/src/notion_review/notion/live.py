@@ -159,7 +159,12 @@ class LiveNotionClient:
     def create_row(self, *, database_id: str, properties: dict[str, Any]) -> QueueRow:
         payload = {"parent": {"database_id": database_id}, "properties": properties}
         data = self._request("POST", "/v1/pages", json=payload).json()
-        return QueueRow(page_id=data["id"], status=_row_status(data), url=data.get("url", ""))
+        return QueueRow(
+            page_id=data["id"],
+            status=_row_status(data),
+            url=data.get("url", ""),
+            properties=data.get("properties") or {},
+        )
 
     def query_database(self, database_id: str) -> list[QueueRow]:
         rows: list[QueueRow] = []
@@ -170,7 +175,12 @@ class LiveNotionClient:
                 body["start_cursor"] = cursor
             data = self._request("POST", f"/v1/databases/{database_id}/query", json=body).json()
             rows.extend(
-                QueueRow(page_id=r["id"], status=_row_status(r), url=r.get("url", ""))
+                QueueRow(
+                    page_id=r["id"],
+                    status=_row_status(r),
+                    url=r.get("url", ""),
+                    properties=r.get("properties") or {},
+                )
                 for r in data.get("results", [])
             )
             if not data.get("has_more"):

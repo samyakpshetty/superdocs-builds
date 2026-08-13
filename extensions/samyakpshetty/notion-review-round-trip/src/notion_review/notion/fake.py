@@ -42,8 +42,14 @@ class FakeNotionClient:
         self._counter += 1
         return f"{prefix}_{self._counter:04d}"
 
+    def _next_uuid(self) -> str:
+        """A Notion-shaped id. Real ids are UUIDs, and callers parse them out of pasted URLs."""
+        self._counter += 1
+        n = self._counter
+        return f"{n:08x}-0000-4000-8000-{n:012x}"
+
     def new_page(self, title: str) -> str:
-        page_id = self._next("page")
+        page_id = self._next_uuid()
         self._pages[page_id] = Page(id=page_id, title=title, url=f"https://notion.so/{page_id}")
         self._children[page_id] = []
         return page_id
@@ -159,13 +165,19 @@ class FakeNotionClient:
             page_id=page_id,
             status=self._status_of(page_id),
             url=f"https://notion.so/{page_id}",
+            properties=dict(self._rows[page_id]),
         )
 
     def query_database(self, database_id: str) -> list[QueueRow]:
         if database_id not in self._databases:
             raise NotionNotFoundError(f"database not found: {database_id}")
         return [
-            QueueRow(page_id=pid, status=self._status_of(pid), url=f"https://notion.so/{pid}")
+            QueueRow(
+                page_id=pid,
+                status=self._status_of(pid),
+                url=f"https://notion.so/{pid}",
+                properties=dict(self._rows[pid]),
+            )
             for pid in self._databases[database_id]
         ]
 

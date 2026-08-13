@@ -41,6 +41,17 @@ class Config(BaseModel):
     notion_token: str | None = None
     notion_page_id: str | None = None
     notion_version: str = "2022-06-28"  # Notion's required API-version header
+    # The Notion database a team adds a row to when they want a page sent for review. Optional:
+    # without it the service only takes in returned files and `send` is the entry point.
+    notion_requests_database_id: str = ""
+
+    # Delivering the document to reviewers. Without a mail server the file is written to a folder,
+    # which is a real channel when that folder is synced (Drive, Dropbox, SharePoint).
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_sender: str = ""
 
     # Durable substrate. None -> the zero-infra SQLite store (used by the keyless suite).
     database_url: str | None = None
@@ -120,6 +131,12 @@ class Config(BaseModel):
             notion_token=env.get("NOTION_TOKEN") or None,
             notion_page_id=env.get("NOTION_PAGE_ID") or None,
             notion_version=env.get("NOTION_VERSION", "2022-06-28"),
+            notion_requests_database_id=env.get("NOTION_REQUESTS_DB", ""),
+            smtp_host=env.get("SMTP_HOST", ""),
+            smtp_port=_int("SMTP_PORT", 587),
+            smtp_username=env.get("SMTP_USERNAME", ""),
+            smtp_password=env.get("SMTP_PASSWORD", ""),
+            smtp_sender=env.get("SMTP_SENDER", ""),
             database_url=env.get("DATABASE_URL") or None,
             log_format=log_format,
             sections_per_op=_int("SECTIONS_PER_OP", 25),
