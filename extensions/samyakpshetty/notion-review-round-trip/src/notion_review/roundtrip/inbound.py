@@ -299,8 +299,14 @@ def _run_superdocs_review(
     job = _chat_with_retry(round_, superdocs, "\n\n".join(parts), config)
     if job is None:
         return []  # the batch failed; reviewer text is still authoritative, so nothing is lost
-    if job.usage is not None:
+    # Count what this batch cost. The live API does not always return a usage block, and a budget
+    # that only counts when the server volunteers a number is no budget at all — so fall back to
+    # the documented rule: one operation per request that changed something (a request that errors
+    # or changes nothing is not billed).
+    if job.usage is not None and job.usage.ops_charged:
         round_.ops_spent += job.usage.ops_charged
+    elif job.chunk_diffs:
+        round_.ops_spent += 1
     return [(diff, job.job_id) for diff in job.chunk_diffs]
 
 
@@ -428,8 +434,7 @@ def apply_decisions(
 
     failed = any(p.status == ProposalStatus.FAILED for p in round_.proposals)
     round_.status = RoundStatus.FAILED if failed else RoundStatus.COMPLETED
-
-    _post_page_summaries(round_, notion)
+    # The completion summary is posted once the whole round finishes, not once per batch.
 
 
 def _relay_to_superdocs_approve(round_: ReviewRound, superdocs: SuperDocsClient) -> None:
@@ -442,27 +447,46 @@ def _relay_to_superdocs_approve(round_: ReviewRound, superdocs: SuperDocsClient)
     decided = [
         p
         for p in round_.proposals
-        if p.change_id and p.status in (ProposalStatus.APPROVED, ProposalStatus.REJECTED)
+        if p.change_id
+        and not p.relayed
+        and p.status in (ProposalStatus.APPROVED, ProposalStatus.REJECTED)
     ]
     if not decided:
         return
-    job_id = next((p.job_id for p in decided if p.job_id), "")
-    decisions = [
-        ApprovalDecision(change_id=p.change_id, approved=p.status == ProposalStatus.APPROVED)
-        for p in decided
-    ]
-    try:
-        result = superdocs.approve(session_id=round_.session_id, decisions=decisions, job_id=job_id)
-        _log.info(
-            "superdocs_approve",
-            extra={"round_id": round_.id, "applied": result.applied_count},
-        )
-    except SuperDocsError as exc:
-        _log.warning("superdocs_approve_failed", extra={"round_id": round_.id, "error": str(exc)})
+    # Proposals from different batches belong to different jobs, so group by job and send one call
+    # each — a change can only be approved against the job that proposed it. Each decision is
+    # relayed exactly once, so an earlier batch's rejections are never re-sent.
+    by_job: dict[str, list[ProposedChange]] = {}
+    for proposal in decided:
+        by_job.setdefault(proposal.job_id, []).append(proposal)
+
+    for job_id, group in by_job.items():
+        decisions = [
+            ApprovalDecision(change_id=p.change_id, approved=p.status == ProposalStatus.APPROVED)
+            for p in group
+        ]
+        try:
+            result = superdocs.approve(
+                session_id=round_.session_id, decisions=decisions, job_id=job_id
+            )
+            _log.info(
+                "superdocs_approve",
+                extra={"round_id": round_.id, "job_id": job_id, "applied": result.applied_count},
+            )
+        except SuperDocsError as exc:
+            _log.warning(
+                "superdocs_approve_failed", extra={"round_id": round_.id, "error": str(exc)}
+            )
+        for proposal in group:
+            proposal.relayed = True  # decided once, sent once, whatever the outcome
 
 
-def _post_page_summaries(round_: ReviewRound, notion: NotionClient) -> None:
-    """Close the loop on each page in the packet with its own outcome — a durable record."""
+def post_page_summaries(round_: ReviewRound, notion: NotionClient) -> None:
+    """Close the loop on each page in the packet with its own outcome — a durable record.
+
+    Posted once, when the whole round finishes, so a multi-batch review leaves one accurate
+    summary per page instead of a premature "complete" after every batch.
+    """
     fallback = round_.notion_page_id
     for page_id in round_.page_ids():
         on_page = [p for p in round_.proposals if (p.notion_page_id or fallback) == page_id]

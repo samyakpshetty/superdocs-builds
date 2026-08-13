@@ -13,10 +13,15 @@ import click
 
 from notion_review.clients import build_clients
 from notion_review.config import Config
-from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange
+from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange, ReviewRound
 from notion_review.logging import setup_logging
 from notion_review.notion.base import NotionClient
-from notion_review.roundtrip import InboundController, send_for_review, send_packet_for_review
+from notion_review.roundtrip import (
+    InboundController,
+    ReviewGate,
+    send_for_review,
+    send_packet_for_review,
+)
 from notion_review.roundtrip.checkpoint import open_checkpointer
 from notion_review.roundtrip.inbound import plain_text_from_html
 from notion_review.sample import demo_page, demo_review_docx
@@ -54,10 +59,8 @@ def demo(interactive: bool) -> None:
     gate = controller.start(round_id=packet.round.id, docx_bytes=demo_review_docx())
     click.echo(f"   → {len(gate.pending)} change(s) proposed, awaiting your approval.\n")
 
-    decisions = _collect_decisions(gate.pending, interactive=interactive)
-
-    click.secho("3. Applying the approved changes to Notion…", fg="cyan", bold=True)
-    final = controller.submit(round_id=packet.round.id, decisions=decisions)
+    click.secho("3. Approving each change, then applying it to Notion…", fg="cyan", bold=True)
+    final = _run_gates(controller, round_id=packet.round.id, gate=gate, interactive=interactive)
     _print_outcome(final.proposals, notion)
     click.echo(f"\n   cost: {final.cost_summary()}")
     click.secho(f"Round {final.id} finished: {final.status.value}.", fg="green", bold=True)
@@ -118,9 +121,7 @@ def review(round_id: str, markup: str, state: str, interactive: bool) -> None:
     )
     gate = controller.start(round_id=round_id, docx_bytes=Path(markup).read_bytes())
     click.echo(f"{len(gate.pending)} change(s) proposed.\n")
-    decisions = _collect_decisions(gate.pending, interactive=interactive)
-    click.secho("Applying the approved changes to Notion…", fg="cyan", bold=True)
-    final = controller.submit(round_id=round_id, decisions=decisions)
+    final = _run_gates(controller, round_id=round_id, gate=gate, interactive=interactive)
     _print_outcome(final.proposals, notion)
     click.echo(f"\n   cost: {final.cost_summary()}")
     click.secho(f"Round {final.id} finished: {final.status.value}.", fg="green", bold=True)
@@ -144,6 +145,30 @@ def whoami() -> None:
         click.secho(f"whoami unavailable for this key: {exc}", fg="yellow")
     finally:
         client.close()
+
+
+def _run_gates(
+    controller: InboundController,
+    *,
+    round_id: str,
+    gate: ReviewGate,
+    interactive: bool,
+) -> ReviewRound:
+    """Drive every approval gate to the end of the round.
+
+    A review larger than one SuperDocs operation is proposed batch by batch — each batch is gated
+    and applied before the next goes out — so the driver keeps approving until nothing is pending.
+    """
+    batch = 0
+    final = gate.round
+    while gate.pending:
+        batch += 1
+        if batch > 1:
+            click.secho(f"\nBatch {batch}: {len(gate.pending)} more change(s).", fg="cyan")
+        decisions = _collect_decisions(gate.pending, interactive=interactive)
+        final = controller.submit(round_id=round_id, decisions=decisions)
+        gate = ReviewGate(round=final, pending=final.pending())
+    return final
 
 
 def _collect_decisions(

@@ -94,6 +94,7 @@ class ProposedChange(BaseModel):
     reviewer_comment: str = ""
     ai_explanation: str = ""  # SuperDocs' note when its AI authored the edit (comment-intent)
     links: list[str] = Field(default_factory=list)  # URLs the edit introduces; shown at the gate
+    relayed: bool = False  # this decision has been sent to SuperDocs' approve (never sent twice)
     status: ProposalStatus = ProposalStatus.PENDING
     error: str | None = None
 

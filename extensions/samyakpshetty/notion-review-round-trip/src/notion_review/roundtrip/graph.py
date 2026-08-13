@@ -29,6 +29,7 @@ from notion_review.roundtrip.inbound import (
     MatchedEdit,
     apply_decisions,
     match_edits,
+    post_page_summaries,
     propose_changes,
 )
 from notion_review.store import Store
@@ -125,6 +126,8 @@ def build_review_graph(
         round_ = _load(store, state["round_id"])
         if round_.status not in (RoundStatus.PARKED, RoundStatus.FAILED):
             round_.status = RoundStatus.COMPLETED
+        # One accurate summary per page, now that every batch has been decided.
+        post_page_summaries(round_, notion)
         store.save(round_)
         return {}
 
