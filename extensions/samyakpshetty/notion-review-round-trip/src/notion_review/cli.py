@@ -13,6 +13,7 @@ import click
 
 from notion_review.clients import build_clients
 from notion_review.config import Config
+from notion_review.docx_markup.stamp import identify_round, stamp_round_id
 from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange, ReviewRound
 from notion_review.logging import setup_logging
 from notion_review.notion.base import NotionClient
@@ -80,11 +81,17 @@ def demo(interactive: bool) -> None:
     help="A Notion page id to send for review. Repeat to send several pages as one packet.",
 )
 @click.option(
-    "--out", default="review.docx", type=click.Path(), help="Where to write the Word file."
+    "--out",
+    default="",
+    type=click.Path(),
+    help="Where to write the Word file (default: review-<round-id>.docx).",
 )
 @click.option("--state", default=_STATE_DEFAULT, type=click.Path(), help="Round store file.")
 def send(page_ids: tuple[str, ...], out: str, state: str) -> None:
     """Send one or more Notion pages out for review; writes a Word file and records the round.
+
+    The Word file carries its own review-round id, so whatever route it takes back — an email
+    reply, an upload, a shared folder — it can be matched to its round without anyone quoting it.
 
     Uses the live providers when PROVIDER=live, otherwise the fakes.
     """
@@ -95,17 +102,19 @@ def send(page_ids: tuple[str, ...], out: str, state: str) -> None:
     packet = send_packet_for_review(
         notion=notion, superdocs=superdocs, store=store, page_ids=list(page_ids)
     )
-    Path(out).write_bytes(packet.docx.content)
+    destination = Path(out) if out else Path(f"review-{packet.round.id}.docx")
+    destination.write_bytes(stamp_round_id(packet.docx.content, packet.round.id))
     click.secho(f"Sent for review. round={packet.round.id}", fg="green", bold=True)
     click.echo(
-        f"  {len(page_ids)} page(s) · {len(packet.round.block_map)} blocks · Word file → {out}"
+        f"  {len(page_ids)} page(s) · {len(packet.round.block_map)} blocks · "
+        f"Word file → {destination}"
     )
-    click.echo("  Mark it up in Word (tracked changes + comments), then run:")
-    click.echo(f"    notion-review review --round-id {packet.round.id} --markup {out}")
+    click.echo("  Send that file to your reviewers. When it comes back, run:")
+    click.echo("    notion-review review --markup <the returned file>")
 
 
 @main.command()
-@click.option("--round-id", required=True, help="The review round id printed by `send`.")
+@click.option("--round-id", default="", help="Usually detected from the file; overrides it.")
 @click.option("--markup", required=True, type=click.Path(exists=True), help="The marked-up .docx.")
 @click.option("--state", default=_STATE_DEFAULT, type=click.Path(), help="Round store file.")
 @click.option("--interactive", is_flag=True, help="Approve each change by hand.")
@@ -113,6 +122,7 @@ def review(round_id: str, markup: str, state: str, interactive: bool) -> None:
     """Apply a reviewer's marked-up Word file back onto the Notion page, with approval."""
     config = Config.from_env()
     setup_logging(config.log_format)
+    round_id = _resolve_round(round_id, markup)
     notion, superdocs = build_clients(config)
     store = SQLiteStore(state)
     # A durable graph checkpoint beside the state file: if this command is killed at the gate,
@@ -133,7 +143,7 @@ def review(round_id: str, markup: str, state: str, interactive: bool) -> None:
 
 
 @main.command("review-in-notion")
-@click.option("--round-id", required=True, help="The review round id printed by `send`.")
+@click.option("--round-id", default="", help="Usually detected from the file; overrides it.")
 @click.option("--markup", required=True, type=click.Path(exists=True), help="The marked-up .docx.")
 @click.option("--state", default=_STATE_DEFAULT, type=click.Path(), help="Round store file.")
 @click.option("--poll", default=15.0, help="Seconds between checks for the owner's decisions.")
@@ -146,6 +156,7 @@ def review_in_notion(round_id: str, markup: str, state: str, poll: float, timeou
     """
     config = Config.from_env()
     setup_logging(config.log_format)
+    round_id = _resolve_round(round_id, markup)
     notion, superdocs = build_clients(config)
     store = SQLiteStore(state)
     controller = InboundController(
@@ -204,6 +215,21 @@ def whoami() -> None:
         click.secho(f"whoami unavailable for this key: {exc}", fg="yellow")
     finally:
         client.close()
+
+
+def _resolve_round(round_id: str, markup: str) -> str:
+    """Which round a returned file belongs to: the file says so, unless told otherwise."""
+    if round_id:
+        return round_id
+    path = Path(markup)
+    detected = identify_round(path.read_bytes(), path.name)
+    if not detected:
+        raise click.ClickException(
+            "could not tell which review round this file belongs to — it carries no round id "
+            "and the filename has none. Pass --round-id explicitly."
+        )
+    click.echo(f"Review round {detected} (read from the returned file).")
+    return detected
 
 
 def _run_gates(
