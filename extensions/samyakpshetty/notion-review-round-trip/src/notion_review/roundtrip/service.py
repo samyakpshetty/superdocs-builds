@@ -152,9 +152,9 @@ class ReviewService:
                     recipients=request.reviewers,
                     subject=f"For review: {filename}",
                     body=(
-                        "The attached document is out for review. Mark it up in Word with "
-                        "tracked changes and comments, then send it back — it carries its own "
-                        "review id, so it will be matched automatically."
+                        "This document is out for review. Mark it up in Word with tracked "
+                        "changes and comments, then put it back in the review folder — it "
+                        "carries its own review id, so it is matched automatically."
                     ),
                 )
             )
