@@ -193,7 +193,9 @@ class ReviewService:
             report.rejected.append(item.filename)
             return
         try:
-            gate = self._controller.start(round_id=round_id, docx_bytes=item.content)
+            gate = self._controller.start(
+                round_id=round_id, docx_bytes=item.content, filename=item.filename
+            )
         except DocxError as exc:
             self._intake.reject(item, f"could not read the document: {exc}")
             report.rejected.append(item.filename)

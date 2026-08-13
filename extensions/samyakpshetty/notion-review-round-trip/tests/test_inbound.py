@@ -5,23 +5,29 @@ from __future__ import annotations
 from _docx_fixtures import (
     CHANGE_AUTHOR,
     COMMENT_AUTHOR,
+    COMMENTED_PARA,
     DUP_MIDDLE,
     DUP_TEXT,
     INTENT_COMMENT,
     INTENT_PARA,
     LINK_ORIGINAL,
+    OTHER_PARA_PROPOSED,
     PACKET_P1_ORIGINAL,
     PACKET_P1_PROPOSED,
     PACKET_P2_ORIGINAL,
     PACKET_P2_PROPOSED,
+    PARA_ORIGINAL,
     QUESTION_COMMENT,
     QUESTION_PARA,
+    SECOND_REVIEWER,
     comment_intent_docx,
     duplicate_second_edited_docx,
     link_and_script_docx,
     packet_review_docx,
     question_comment_docx,
     reviewed_docx,
+    rival_reviewer_docx,
+    second_reviewer_docx,
     unchanged_docx,
 )
 from notion_review.config import Config
@@ -519,8 +525,6 @@ def test_read_back_mismatch_marks_the_change_failed() -> None:
         def update_block(self, block_id, *, block_type, rich_text):  # type: ignore[no-untyped-def]
             return self.retrieve_block(block_id)  # pretend success, change nothing
 
-    from _docx_fixtures import PARA_ORIGINAL
-
     notion = DroppingNotion()
     page_id = notion.new_page("Spec")
     notion.add(page_id, "paragraph", PARA_ORIGINAL)
@@ -539,3 +543,96 @@ def test_read_back_mismatch_marks_the_change_failed() -> None:
     assert final.status == RoundStatus.FAILED
     failed = [p for p in final.proposals if p.status == ProposalStatus.FAILED]
     assert failed and "read-back" in (failed[0].error or "")
+
+
+def test_a_second_reviewers_copy_is_taken_in_alongside_the_first() -> None:
+    # Every reviewer marks up their own copy, so the same round takes in several returned files.
+    _, _, store, controller, round_id = _setup()
+
+    controller.start(round_id=round_id, docx_bytes=reviewed_docx(), filename="from-dana.docx")
+    gate = controller.start(
+        round_id=round_id, docx_bytes=second_reviewer_docx(), filename="from-priya.docx"
+    )
+
+    reviewers = {p.reviewer_name for p in gate.pending}
+    assert CHANGE_AUTHOR in reviewers  # the first reviewer's tracked change
+    assert SECOND_REVIEWER in reviewers  # the second reviewer's, which used to be dropped
+    proposed = {p.new_html for p in gate.pending}
+    assert any(OTHER_PARA_PROPOSED in html for html in proposed)
+    round_ = store.get(round_id)
+    assert round_ is not None
+    assert [s.filename for s in round_.submissions] == ["from-dana.docx", "from-priya.docx"]
+
+
+def test_the_same_returned_file_twice_costs_nothing_and_adds_nothing() -> None:
+    # A channel that re-delivers, or a restart mid-tick, must not re-spend or duplicate.
+    _, superdocs, store, controller, round_id = _setup()
+
+    first = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    calls = superdocs.chat_calls()
+    again = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+
+    assert superdocs.chat_calls() == calls  # zero ops re-spent
+    assert len(again.pending) == len(first.pending)
+    round_ = store.get(round_id)
+    assert round_ is not None and len(round_.submissions) == 1
+
+
+def test_changes_from_two_reviewers_are_approved_together_and_both_land() -> None:
+    notion, _, store, controller, round_id = _setup()
+    controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    gate = controller.start(round_id=round_id, docx_bytes=second_reviewer_docx())
+    round_ = store.get(round_id)
+    assert round_ is not None
+    aurora = next(e for e in round_.block_map if PARA_ORIGINAL in e.original_text)
+    postgres = next(e for e in round_.block_map if COMMENTED_PARA in e.original_text)
+
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    final = controller.submit(round_id=round_id, decisions=decisions)
+
+    # Each reviewer's change landed on its own block: two threads, one round, one decision pass.
+    assert "Q4" in notion.block_text(aurora.notion_block_id)
+    assert notion.block_text(postgres.notion_block_id) == OTHER_PARA_PROPOSED
+    assert final.status == RoundStatus.COMPLETED
+
+
+def test_two_reviewers_rewriting_one_line_are_flagged_as_competing_before_the_decision() -> None:
+    _, _, store, controller, round_id = _setup()
+    controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    gate = controller.start(round_id=round_id, docx_bytes=rival_reviewer_docx())
+    round_ = store.get(round_id)
+    assert round_ is not None
+    aurora = next(e for e in round_.block_map if PARA_ORIGINAL in e.original_text)
+
+    contested = round_.contested()
+
+    assert list(contested) == [aurora.notion_block_id]
+    assert len(contested[aurora.notion_block_id]) == 2
+    assert {p.reviewer_name for p in contested[aurora.notion_block_id]} == {
+        CHANGE_AUTHOR,
+        SECOND_REVIEWER,
+    }
+    # And approving both is safe: the first lands, the second is refused by the drift guard
+    # rather than overwriting it.
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    final = controller.submit(round_id=round_id, decisions=decisions)
+    on_block = [p for p in final.proposals if p.notion_block_id == aurora.notion_block_id]
+    assert sorted(p.status.value for p in on_block) == ["applied", "conflict"]
+
+
+def test_resubmitting_a_decision_leaves_an_applied_change_applied() -> None:
+    # Decisions are read from Notion on every pass, so the same one comes back repeatedly. A
+    # change already written must not go through the write a second time: the block now holds
+    # the text we wrote, so it would trip its own drift guard and undo a good outcome.
+    notion, _, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    round_ = store.get(round_id)
+    assert round_ is not None
+    aurora = next(e for e in round_.block_map if PARA_ORIGINAL in e.original_text)
+    decisions = [{"proposal_id": p.id, "approved": True} for p in gate.pending]
+    controller.submit(round_id=round_id, decisions=decisions)
+
+    final = controller.submit(round_id=round_id, decisions=decisions)  # the very same decisions
+
+    assert [p.status.value for p in final.proposals] == ["applied", "applied"]
+    assert "Q4" in notion.block_text(aurora.notion_block_id)

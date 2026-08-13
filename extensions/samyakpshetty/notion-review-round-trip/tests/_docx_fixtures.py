@@ -99,6 +99,41 @@ def reviewed_docx() -> bytes:
     return build_docx(_document_xml(), _comments_xml())
 
 
+# A second reviewer's copy of the same document. Every reviewer marks up their own copy, so these
+# come back separately, each carrying the same review-round id.
+SECOND_REVIEWER = "Priya Legal"
+OTHER_PARA_INSERT = " It is provisioned as a managed instance."
+OTHER_PARA_PROPOSED = COMMENTED_PARA + OTHER_PARA_INSERT
+RIVAL_INSERT = " Pricing is not final."
+RIVAL_PROPOSED = PARA_ORIGINAL + RIVAL_INSERT
+
+
+def paragraph_insert_docx(paragraph: str, insertion: str, author: str) -> bytes:
+    """One paragraph carrying a tracked insertion by ``author`` — another reviewer's copy."""
+    date = "2026-08-14T10:00:00Z"
+    document = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}"><w:body>'
+        f"<w:p>"
+        f'<w:r><w:t xml:space="preserve">{paragraph}</w:t></w:r>'
+        f'<w:ins w:id="1" w:author="{author}" w:date="{date}">'
+        f'<w:r><w:t xml:space="preserve">{insertion}</w:t></w:r></w:ins>'
+        f"</w:p>"
+        f"</w:body></w:document>"
+    )
+    return build_docx(document)
+
+
+def second_reviewer_docx() -> bytes:
+    """A second reviewer editing a *different* paragraph than the first reviewer did."""
+    return paragraph_insert_docx(COMMENTED_PARA, OTHER_PARA_INSERT, SECOND_REVIEWER)
+
+
+def rival_reviewer_docx() -> bytes:
+    """A second reviewer editing the *same* paragraph the first reviewer did, differently."""
+    return paragraph_insert_docx(PARA_ORIGINAL, RIVAL_INSERT, SECOND_REVIEWER)
+
+
 # Two identical paragraphs where only the SECOND is edited — for positional matching.
 DUP_TEXT = "Repeat me exactly."
 DUP_MIDDLE = "A different middle line."

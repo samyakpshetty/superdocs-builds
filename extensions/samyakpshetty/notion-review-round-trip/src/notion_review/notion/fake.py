@@ -201,6 +201,16 @@ class FakeNotionClient:
     def row_properties(self, page_id: str) -> dict[str, object]:
         return dict(self._rows[page_id])
 
+    def row_text(self, page_id: str, name: str) -> str:
+        """Read one rich-text (or title) property back as plain text, the way a reader sees it."""
+        prop = self._rows[page_id].get(name)
+        if not isinstance(prop, dict):
+            return ""
+        runs = prop.get("rich_text") or prop.get("title") or []
+        if not isinstance(runs, list):
+            return ""
+        return "".join(str(run.get("text", {}).get("content", "")) for run in runs)
+
     # -- introspection for tests -----------------------------------------------
     def _snapshot(self, block_id: str) -> Block:
         """Return a copy of a stored block with ``has_children`` set, children left unresolved."""

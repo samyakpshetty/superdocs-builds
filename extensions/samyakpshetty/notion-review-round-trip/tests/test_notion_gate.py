@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from _docx_fixtures import CHANGE_AUTHOR, reviewed_docx
+from _docx_fixtures import CHANGE_AUTHOR, SECOND_REVIEWER, reviewed_docx, rival_reviewer_docx
 from notion_review.config import Config
-from notion_review.domain import ProposalStatus, RoundStatus
+from notion_review.domain import ChangeSource, ProposalStatus, RoundStatus
 from notion_review.notion import FakeNotionClient
 from notion_review.notion.queue_schema import STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
 from notion_review.roundtrip import InboundController, send_for_review
@@ -215,3 +215,37 @@ def test_a_partly_decided_queue_applies_only_what_was_decided() -> None:
     decisions = await_decisions(gate.round, notion, poll_interval_s=0, timeout_s=0)
 
     assert decisions == [{"proposal_id": first.id, "approved": True}]
+
+
+def test_a_contested_line_says_so_on_every_row_including_the_one_queued_first() -> None:
+    # The first reviewer's row is published before the second reviewer's copy even arrives, so
+    # it has to be brought up to date — otherwise the collision is invisible on exactly the row
+    # the owner is most likely to approve first.
+    notion, store, controller, round_id = _setup()
+    first = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    publish_pending(first.round, notion, store)
+    announce_inline(first.round, notion, store)
+
+    second = controller.start(round_id=round_id, docx_bytes=rival_reviewer_docx())
+    publish_pending(second.round, notion, store)
+
+    round_ = store.get(round_id)
+    assert round_ is not None
+    aurora_changes = [p for p in round_.pending() if p.source == ChangeSource.TRACKED_CHANGE]
+    assert len(aurora_changes) == 2
+    for proposal in aurora_changes:
+        notes = notion.row_text(proposal.queue_row_id, "Notes")
+        assert "rewrote this line" in notes
+        rival = SECOND_REVIEWER if proposal.reviewer_name == CHANGE_AUTHOR else CHANGE_AUTHOR
+        assert rival in notes  # and it names who it competes with
+
+
+def test_an_uncontested_change_is_never_labelled_as_competing() -> None:
+    notion, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    publish_pending(gate.round, notion, store)
+
+    round_ = store.get(round_id)
+    assert round_ is not None
+    for proposal in round_.pending():
+        assert "rewrote this line" not in notion.row_text(proposal.queue_row_id, "Notes")

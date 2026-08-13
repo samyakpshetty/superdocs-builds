@@ -140,7 +140,9 @@ def review(round_id: str, markup: str, state: str, interactive: bool) -> None:
         config=config,
         checkpointer=open_checkpointer(f"{state}.ckpt"),
     )
-    gate = controller.start(round_id=round_id, docx_bytes=Path(markup).read_bytes())
+    gate = controller.start(
+        round_id=round_id, docx_bytes=Path(markup).read_bytes(), filename=Path(markup).name
+    )
     click.echo(f"{len(gate.pending)} change(s) proposed.\n")
     final = _run_gates(controller, round_id=round_id, gate=gate, interactive=interactive)
     _print_outcome(final.proposals, notion)
@@ -172,7 +174,9 @@ def review_in_notion(round_id: str, markup: str, state: str, poll: float, timeou
         config=config,
         checkpointer=open_checkpointer(f"{state}.ckpt"),
     )
-    gate = controller.start(round_id=round_id, docx_bytes=Path(markup).read_bytes())
+    gate = controller.start(
+        round_id=round_id, docx_bytes=Path(markup).read_bytes(), filename=Path(markup).name
+    )
     final = gate.round
     batch = 0
     while gate.pending:

@@ -76,6 +76,23 @@ class BlockMapEntry(BaseModel):
     original_text: str = ""
 
 
+class Submission(BaseModel):
+    """One returned copy of the review document, from one reviewer.
+
+    A round goes out to several reviewers and each returns their own marked-up copy, so the unit
+    of intake is the *submission*, not the round. The key is a content hash of the returned file:
+    the same file arriving twice is a duplicate to ignore, while a different file for the same
+    round is another reviewer whose changes must be taken in and merged.
+    """
+
+    key: str  # content hash of the returned .docx — the submission's identity
+    filename: str = ""
+    received_at: datetime = Field(default_factory=_now)
+    reviewers: list[str] = Field(default_factory=list)  # who marked up this copy
+    matched: int = 0  # changes located on a block
+    unmatched: int = 0  # changes that could not be located, surfaced rather than guessed
+
+
 class ProposedChange(BaseModel):
     """A single reviewer change, gated on its way back onto a Notion block."""
 
@@ -97,6 +114,7 @@ class ProposedChange(BaseModel):
     relayed: bool = False  # this decision has been sent to SuperDocs' approve (never sent twice)
     queue_row_id: str = ""  # the Notion review-queue row the owner decides this change in
     queue_row_url: str = ""  # link to that row, so the comment on the line is one click from it
+    competing_notified: bool = False  # its row already says another reviewer rewrote this line
     discussion_id: str = ""  # the comment thread on the block, where the owner can reply instead
     status: ProposalStatus = ProposalStatus.PENDING
     error: str | None = None
@@ -127,6 +145,7 @@ class ReviewRound(BaseModel):
     sent_version_id: str | None = None  # SuperDocs version exported to Word
     block_map: list[BlockMapEntry] = Field(default_factory=list)
     proposals: list[ProposedChange] = Field(default_factory=list)
+    submissions: list[Submission] = Field(default_factory=list)  # each reviewer's returned copy
 
     ops_spent: int = 0  # SuperDocs operations consumed by this round
     review_url: str | None = None  # the round's queue in Notion — the page's link back to it
@@ -158,3 +177,26 @@ class ReviewRound(BaseModel):
 
     def approved(self) -> list[ProposedChange]:
         return [p for p in self.proposals if p.status == ProposalStatus.APPROVED]
+
+    def has_submission(self, key: str) -> bool:
+        """Whether this exact returned file has already been taken in."""
+        return any(s.key == key for s in self.submissions)
+
+    def contested(self) -> dict[str, list[ProposedChange]]:
+        """Pending changes competing for the same block — two reviewers rewriting one line.
+
+        Only rewrites compete: a proposal that just carries a reviewer's comment does not change
+        the block, so it contests nothing. Two reviewers who made the *identical* edit never reach
+        here — :meth:`ProposedChange.content_key` collapses them into one proposal on the way in —
+        so any block holding more than one pending rewrite holds genuinely different results.
+
+        Applying one of them makes the block no longer read as it did when it went out, so the
+        drift guard would refuse the others. Knowing that *before* deciding is the point: the
+        owner is told these compete rather than discovering it from a conflict afterwards.
+        """
+        by_block: dict[str, list[ProposedChange]] = {}
+        for proposal in self.pending():
+            if proposal.source == ChangeSource.COMMENT:
+                continue
+            by_block.setdefault(proposal.notion_block_id, []).append(proposal)
+        return {block: group for block, group in by_block.items() if len(group) > 1}

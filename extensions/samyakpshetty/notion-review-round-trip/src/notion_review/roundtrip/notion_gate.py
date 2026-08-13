@@ -30,7 +30,9 @@ from notion_review.notion.base import NotionClient, NotionError
 from notion_review.notion.models import RichText
 from notion_review.notion.queue_schema import (
     STATUS_PENDING,
+    competing_note,
     decision_from_status,
+    notes_properties,
     outcome_properties,
     queue_properties,
     row_properties,
@@ -77,17 +79,33 @@ def notify_waiting(round_: ReviewRound, notion: NotionClient) -> None:
         _log.warning("queue_notice_failed", extra={"round_id": round_.id, "error": str(exc)})
 
 
+def rivals_for(round_: ReviewRound, proposal: ProposedChange) -> list[str]:
+    """The other reviewers whose pending change rewrites this same block."""
+    others = [
+        other
+        for other in round_.contested().get(proposal.notion_block_id, [])
+        if other.id != proposal.id
+    ]
+    return list(dict.fromkeys(other.reviewer_name for other in others))
+
+
 def publish_pending(round_: ReviewRound, notion: NotionClient, store: Store) -> int:
     """Add a row for every pending change that does not have one yet. Returns rows added.
 
     The row ids are persisted here rather than left to the caller: they are the only link between
     a proposal and the owner's decision, so losing them would strand the queue.
+
+    A later reviewer's copy can turn an already-queued change into a contested one, so rows
+    published earlier are brought up to date here too — otherwise the first reviewer's row would
+    be the only one that never mentions the collision.
     """
     database_id = ensure_queue(round_, notion)
     first_publish = not any(p.queue_row_id for p in round_.proposals)
     added = 0
     for proposal in round_.pending():
+        rivals = rivals_for(round_, proposal)
         if proposal.queue_row_id:
+            _flag_competing(round_, proposal, rivals, notion)
             continue  # already queued (idempotent across restarts and re-publishes)
         row = notion.create_row(
             database_id=database_id,
@@ -95,16 +113,45 @@ def publish_pending(round_: ReviewRound, notion: NotionClient, store: Store) -> 
                 proposal,
                 before=plain_text_from_html(proposal.old_html),
                 after=plain_text_from_html(proposal.new_html),
+                rivals=rivals,
             ),
         )
         proposal.queue_row_id = row.page_id
         proposal.queue_row_url = row.url
+        proposal.competing_notified = bool(rivals)
         added += 1
     store.save(round_)
     if added and first_publish:
         notify_waiting(round_, notion)  # once, when the first changes arrive to be decided
     _log.info("queue_published", extra={"round_id": round_.id, "rows": added})
     return added
+
+
+def _flag_competing(
+    round_: ReviewRound, proposal: ProposedChange, rivals: list[str], notion: NotionClient
+) -> None:
+    """Tell an already-published row that a later reviewer has now rewritten the same line."""
+    if not rivals or proposal.competing_notified:
+        return
+    try:
+        notion.update_row(
+            page_id=proposal.queue_row_id, properties=notes_properties(proposal, rivals)
+        )
+    except NotionError as exc:
+        _log.warning(
+            "competing_notice_failed",
+            extra={"round_id": round_.id, "row": proposal.queue_row_id, "error": str(exc)},
+        )
+        return
+    proposal.competing_notified = True
+    _log.info(
+        "competing_changes",
+        extra={
+            "round_id": round_.id,
+            "block": proposal.notion_block_id,
+            "reviewers": len(rivals) + 1,
+        },
+    )
 
 
 _APPROVE_WORDS = frozenset({"approve", "approved", "approving", "yes", "lgtm", "ok", "okay", "👍"})
@@ -137,6 +184,9 @@ def announce_inline(round_: ReviewRound, notion: NotionClient, store: Store) -> 
                 else ""
             )
             body = f"{proposal.reviewer_name} proposes{authored}: {summarize(before, after)} · "
+        contest = competing_note(rivals_for(round_, proposal))
+        if contest:
+            body = f"{body}{contest} · "
         # One click to decide: the comment links straight to this change's row in the queue, where
         # Status is a two-click select. Replying "approve" or "reject" here works too, for anyone
         # who would rather answer in the thread than open the row.

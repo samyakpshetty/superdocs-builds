@@ -12,6 +12,7 @@ fake and the live service agree on one format.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange
@@ -106,8 +107,23 @@ def _select(value: str) -> dict[str, Any]:
     return {"select": {"name": value}}
 
 
-def row_properties(proposal: ProposedChange, *, before: str, after: str) -> dict[str, Any]:
-    """One pending change, rendered as a row the owner can decide on at a glance."""
+def competing_note(rivals: Sequence[str]) -> str:
+    """Warn that other reviewers rewrote this same line, naming them.
+
+    Several reviewers mark up their own copies, so two of them can change one line in different
+    ways. Only one rewrite can land — whichever is applied first makes the block no longer read
+    as it did when it went out, and the drift guard then refuses the others rather than
+    overwriting a colleague's change. The owner should know that before deciding, not after.
+    """
+    if not rivals:
+        return ""
+    who = ", ".join(rivals)
+    subject = "Another reviewer" if len(rivals) == 1 else f"{len(rivals)} other reviewers"
+    return f"⚠ {subject} rewrote this line ({who}) — approve one; the rest are skipped as conflicts"
+
+
+def _notes_for(proposal: ProposedChange, rivals: Sequence[str] = ()) -> str:
+    """Everything the owner should read before deciding, in one line."""
     notes: list[str] = []
     if proposal.source == ChangeSource.COMMENT_INTENT and proposal.reviewer_comment:
         notes.append(f"Requested: {proposal.reviewer_comment}")
@@ -117,7 +133,16 @@ def row_properties(proposal: ProposedChange, *, before: str, after: str) -> dict
         notes.append(proposal.reviewer_comment)
     if proposal.links:
         notes.append("⚠ links: " + ", ".join(proposal.links))
+    contest = competing_note(rivals)
+    if contest:
+        notes.append(contest)
+    return " · ".join(notes)
 
+
+def row_properties(
+    proposal: ProposedChange, *, before: str, after: str, rivals: Sequence[str] = ()
+) -> dict[str, Any]:
+    """One pending change, rendered as a row the owner can decide on at a glance."""
     # The title is what the owner scans in the table, so it shows the change itself, not the
     # whole sentence twice.
     summary = summarize(before, after) if after else (proposal.reviewer_comment or "Comment")
@@ -128,8 +153,17 @@ def row_properties(proposal: ProposedChange, *, before: str, after: str) -> dict
         "Kind": _select(_KIND.get(proposal.source, "Comment")),
         "Before": _text(before),
         "After": _text(after),
-        "Notes": _text(" · ".join(notes)),
+        "Notes": _text(_notes_for(proposal, rivals)),
     }
+
+
+def notes_properties(proposal: ProposedChange, rivals: Sequence[str]) -> dict[str, Any]:
+    """Just the Notes, for a row already published when a competing change turned up.
+
+    Deliberately narrow: rewriting the whole row would reset **Status** and discard a decision
+    the owner may already have made.
+    """
+    return {"Notes": _text(_notes_for(proposal, rivals))}
 
 
 def outcome_properties(proposal: ProposedChange) -> dict[str, Any]:

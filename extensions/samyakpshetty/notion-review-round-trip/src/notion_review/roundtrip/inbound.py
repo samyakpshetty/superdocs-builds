@@ -415,10 +415,16 @@ def apply_decisions(
     """
     decision_by_id = {str(d["proposal_id"]): d for d in decisions}
 
-    # 1. Record the human's decision on each proposed change.
+    # 1. Record the human's decision on each change that is still awaiting one.
+    #
+    # A decision is read from Notion on every pass and a round can be resumed more than once, so
+    # the same decision arrives repeatedly. It may only move a change that is still PENDING:
+    # anything already acted on has reached its outcome, and re-recording it would send an applied
+    # change back through the write — where it would trip its own drift guard, because the block
+    # now holds the very text we wrote.
     for proposal in round_.proposals:
         decision = decision_by_id.get(proposal.id)
-        if decision is None:
+        if decision is None or proposal.status != ProposalStatus.PENDING:
             continue
         approved = bool(decision.get("approved"))
         proposal.status = ProposalStatus.APPROVED if approved else ProposalStatus.REJECTED

@@ -12,6 +12,7 @@ Path-changing decisions live in ``_route_after_propose``: nothing to review, or 
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
 from typing import Any, TypedDict
@@ -22,7 +23,7 @@ from langgraph.types import Command, interrupt
 
 from notion_review.config import Config
 from notion_review.docx_markup import parse_docx
-from notion_review.domain import ProposedChange, ReviewRound, RoundStatus
+from notion_review.domain import ProposedChange, ReviewRound, RoundStatus, Submission
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient
 from notion_review.roundtrip.inbound import (
@@ -51,6 +52,12 @@ class ReviewGate:
 
     round: ReviewRound
     pending: list[ProposedChange]
+
+
+def submission_key(docx_bytes: bytes) -> str:
+    """Identify a returned copy by its content, so a re-delivery is free and a second reviewer
+    is not mistaken for one."""
+    return hashlib.sha256(docx_bytes).hexdigest()[:16]
 
 
 def _load(store: Store, round_id: str) -> ReviewRound:
@@ -200,14 +207,20 @@ class InboundController:
             checkpointer=checkpointer if checkpointer is not None else InMemorySaver(),
         )
 
-    def start(self, *, round_id: str, docx_bytes: bytes) -> ReviewGate:
-        """Parse the returned markup, propose each change, and pause at the approval gate.
+    def start(self, *, round_id: str, docx_bytes: bytes, filename: str = "") -> ReviewGate:
+        """Take in one returned copy: parse it, propose its changes, pause at the approval gate.
 
-        Idempotent: a round already at the gate (proposed on an earlier, interrupted run) resumes
-        there without re-parsing or re-proposing, so a restart never repeats the SuperDocs calls.
+        A round goes out to several reviewers, so it takes in several returned copies — each one
+        its own submission, identified by a content hash of the file and proposed on its own graph
+        thread, merging into the round's single set of proposals and its single Notion queue.
+
+        Idempotent on the file, not on the round: the *same* file arriving twice (a restart, a
+        channel that re-delivers) is recognised and costs nothing, while a *different* file for
+        the same round is another reviewer whose changes must not be lost.
         """
+        key = submission_key(docx_bytes)
         round_ = _load(self._store, round_id)
-        if round_.status == RoundStatus.AWAITING_APPROVAL and round_.proposals:
+        if round_.has_submission(key):
             return ReviewGate(round=round_, pending=round_.pending())
         markup = parse_docx(docx_bytes)
         matched, unmatched = match_edits(markup, round_.block_map)
@@ -217,14 +230,57 @@ class InboundController:
             "round_id": round_id,
             "matched": [edit.model_dump() for edit in matched],
         }
-        self._graph.invoke(state, self._config(round_id))
+        self._graph.invoke(state, self._config(round_id, key))
+        # Recorded only once the graph has run, so a crash mid-propose re-parses on restart rather
+        # than marking a review taken in that was never proposed.
         round_ = _load(self._store, round_id)
+        round_.submissions.append(
+            Submission(
+                key=key,
+                filename=filename,
+                reviewers=sorted({edit.reviewer for edit in matched}),
+                matched=len(matched),
+                unmatched=len(unmatched),
+            )
+        )
+        round_.touch()
+        self._store.save(round_)
+        _log.info(
+            "submission_taken_in",
+            extra={
+                "round_id": round_id,
+                "submission": key,
+                "matched": len(matched),
+                "submissions": len(round_.submissions),
+            },
+        )
         return ReviewGate(round=round_, pending=round_.pending())
 
     def submit(self, *, round_id: str, decisions: list[dict[str, Any]]) -> ReviewRound:
-        """Resume the paused graph with the human's decisions and apply the approved changes."""
-        self._graph.invoke(Command(resume=decisions), self._config(round_id))
+        """Resume every paused submission with the human's decisions and apply the approved ones.
+
+        The owner decides in one place — the round's queue in Notion — but the changes they are
+        deciding on may have come from several reviewers, each proposed on its own thread. Every
+        thread still waiting at the gate is resumed with the same decisions; applying is keyed on
+        the proposal id and is idempotent, so a change already written is never written twice.
+        """
+        round_ = _load(self._store, round_id)
+        resumed = 0
+        for submission in round_.submissions:
+            config = self._config(round_id, submission.key)
+            if self._graph.get_state(config).next:  # paused at the gate; anything else is done
+                self._graph.invoke(Command(resume=decisions), config)
+                resumed += 1
+        if not resumed and round_.pending():
+            # The round is durable but its graph checkpoint is not reachable (an in-memory
+            # checkpointer across a restart). Say so loudly: the decisions are still recorded in
+            # Notion and nothing is lost, but they cannot be applied until the run is re-entered.
+            _log.warning(
+                "no_resumable_submission",
+                extra={"round_id": round_id, "pending": len(round_.pending())},
+            )
         return _load(self._store, round_id)
 
-    def _config(self, round_id: str) -> dict[str, Any]:
-        return {"configurable": {"thread_id": round_id}}
+    def _config(self, round_id: str, submission_key: str) -> dict[str, Any]:
+        """One graph thread per returned copy, so each reviewer's run resumes independently."""
+        return {"configurable": {"thread_id": f"{round_id}:{submission_key}"}}
