@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from _docx_fixtures import reviewed_docx
+from _docx_fixtures import SECOND_REVIEWER, reviewed_docx, second_reviewer_docx
 from notion_review.config import Config
 from notion_review.docx_markup.stamp import stamp_round_id
 from notion_review.domain import RoundStatus
@@ -155,3 +155,33 @@ def test_filing_a_return_never_overwrites_an_earlier_one(tmp_path: Path) -> None
         intake.accept(item)
 
     assert {p.name for p in intake.processed.iterdir()} == {"review.docx", "review(1).docx"}
+
+
+def test_a_second_reviewers_copy_waits_for_the_gate_then_is_taken_in(tmp_path: Path) -> None:
+    # A SuperDocs session holds one pending proposal set, so the second copy cannot be proposed
+    # while the first is still waiting on the owner. It waits its turn rather than being lost.
+    service, notion, store, round_id, inbox = _service(tmp_path)
+    (inbox / "from-dana.docx").write_bytes(stamp_round_id(reviewed_docx(), round_id))
+    (inbox / "from-priya.docx").write_bytes(stamp_round_id(second_reviewer_docx(), round_id))
+
+    first = service.tick()
+
+    assert first.ingested == [round_id]
+    assert first.deferred == ["from-priya.docx"]
+    assert (inbox / "from-priya.docx").exists()  # still there, untouched, nothing set aside
+    assert not (inbox / "failed" / "from-priya.docx").exists()
+
+    round_ = store.get(round_id)
+    assert round_ is not None
+    for proposal in round_.pending():  # the owner clears the first reviewer's changes
+        notion.set_row_status(proposal.queue_row_id, STATUS_APPROVED)
+    second = service.tick()
+
+    # Applying the first batch freed the session, so the waiting copy went in on the same pass.
+    assert second.ingested == [round_id]
+    assert second.deferred == []
+    assert (inbox / "processed" / "from-priya.docx").exists()
+    final = store.get(round_id)
+    assert final is not None
+    assert {s.filename for s in final.submissions} == {"from-dana.docx", "from-priya.docx"}
+    assert SECOND_REVIEWER in {p.reviewer_name for p in final.proposals}

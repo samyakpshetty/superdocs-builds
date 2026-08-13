@@ -24,7 +24,7 @@ from notion_review.domain import ReviewRound, RoundStatus
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
 from notion_review.roundtrip.delivery import Deliverable, Delivery
-from notion_review.roundtrip.graph import InboundController
+from notion_review.roundtrip.graph import InboundController, submission_key
 from notion_review.roundtrip.intake import Intake, ReturnedReview
 from notion_review.roundtrip.notion_gate import (
     announce_inline,
@@ -55,6 +55,7 @@ class TickReport:
     sent: list[str] = field(default_factory=list)  # rounds sent out from a Notion request
     ingested: list[str] = field(default_factory=list)  # round ids started from returned files
     rejected: list[str] = field(default_factory=list)  # files that could not be matched or parsed
+    deferred: list[str] = field(default_factory=list)  # copies waiting for the gate to clear
     applied: int = 0  # changes written to Notion this tick
     queued: int = 0  # changes newly waiting for the owner in Notion
     completed: list[str] = field(default_factory=list)  # rounds that finished this tick
@@ -62,7 +63,8 @@ class TickReport:
     def summary(self) -> str:
         return (
             f"sent={len(self.sent)} ingested={len(self.ingested)} queued={self.queued} "
-            f"applied={self.applied} completed={len(self.completed)} rejected={len(self.rejected)}"
+            f"applied={self.applied} completed={len(self.completed)} "
+            f"deferred={len(self.deferred)} rejected={len(self.rejected)}"
         )
 
 
@@ -100,15 +102,22 @@ class ReviewService:
         )
 
     def tick(self) -> TickReport:
-        """One pass: send what was requested, take in what arrived, advance what is waiting."""
+        """One pass: send what was requested, advance what is waiting, take in what arrived.
+
+        Advancing comes before intake so the two stay in step. Applying what the owner decided is
+        what frees the SuperDocs session, and a second reviewer's copy cannot be proposed until it
+        is free — doing it the other way round would make every waiting copy sit out an extra
+        pass. Nothing is lost by the order: a review taken in on this pass has only just been
+        queued, so there are no decisions on it yet to advance.
+        """
         report = TickReport()
         self._take_requests(report)
-        for item in self._intake.poll():
-            self._ingest(item, report)
         for round_id in self._store.list_ids():
             round_ = self._store.get(round_id)
             if round_ is not None and round_.status == RoundStatus.AWAITING_APPROVAL:
                 self._advance(round_, report)
+        for item in self._intake.poll():
+            self._ingest(item, report)
         _log.info("service_tick", extra={"summary": report.summary()})
         return report
 
@@ -188,9 +197,25 @@ class ReviewService:
             self._intake.reject(item, "no review-round id in the document or its filename")
             report.rejected.append(item.filename)
             return
-        if self._store.get(round_id) is None:
+        waiting = self._store.get(round_id)
+        if waiting is None:
             self._intake.reject(item, f"review round {round_id} is not known to this service")
             report.rejected.append(item.filename)
+            return
+        if waiting.pending() and not waiting.has_submission(submission_key(item.content)):
+            # A SuperDocs session holds one pending proposal set at a time, so a second reviewer's
+            # copy cannot be proposed while the first is still at the gate. Leave it where it is
+            # and take it in on a later pass, once the owner has decided what is already waiting —
+            # the same reason the batch loop exists, and nothing is lost by waiting.
+            report.deferred.append(item.filename)
+            _log.info(
+                "submission_deferred",
+                extra={
+                    "round_id": round_id,
+                    "file": item.filename,
+                    "pending": len(waiting.pending()),
+                },
+            )
             return
         try:
             gate = self._controller.start(
