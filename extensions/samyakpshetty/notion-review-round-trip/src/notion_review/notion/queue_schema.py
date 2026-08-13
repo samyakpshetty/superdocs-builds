@@ -58,6 +58,42 @@ def queue_properties() -> dict[str, Any]:
     }
 
 
+def changed_span(before: str, after: str) -> tuple[str, str]:
+    """The part of a change that actually differs, with the shared context trimmed away.
+
+    A reviewer usually edits a few words inside a long sentence. Showing the whole sentence twice
+    makes a change unreadable at a glance — the eye has to diff it. This returns just the two sides
+    that differ, so a row or a comment can say ``"operations teams" → "revenue operations teams"``.
+    """
+    if before == after:
+        return "", ""
+    shortest = min(len(before), len(after))
+    head = 0
+    while head < shortest and before[head] == after[head]:
+        head += 1
+    tail = 0
+    while tail < shortest - head and before[-1 - tail] == after[-1 - tail]:
+        tail += 1
+    return before[head : len(before) - tail], after[head : len(after) - tail]
+
+
+def summarize(before: str, after: str, *, width: int = 45) -> str:
+    """A one-line, readable rendering of a change — an insertion, a deletion, or a replacement."""
+    was, becomes = changed_span(before, after)
+    if not was and not becomes:
+        return before[:width]
+
+    def show(value: str) -> str:
+        value = value.strip()
+        return value if len(value) <= width else value[: width - 1] + "…"
+
+    if not was.strip():
+        return f"add “{show(becomes)}”"
+    if not becomes.strip():
+        return f"remove “{show(was)}”"
+    return f"“{show(was)}” → “{show(becomes)}”"
+
+
 def _text(value: str) -> dict[str, Any]:
     return {"rich_text": [{"type": "text", "text": {"content": value[:_PROP_LIMIT]}}]}
 
@@ -82,7 +118,9 @@ def row_properties(proposal: ProposedChange, *, before: str, after: str) -> dict
     if proposal.links:
         notes.append("⚠ links: " + ", ".join(proposal.links))
 
-    summary = f"{before[:60]} → {after[:60]}" if after else (proposal.reviewer_comment or "Comment")
+    # The title is what the owner scans in the table, so it shows the change itself, not the
+    # whole sentence twice.
+    summary = summarize(before, after) if after else (proposal.reviewer_comment or "Comment")
     return {
         "Change": _title(summary),
         "Status": _select(STATUS_PENDING),

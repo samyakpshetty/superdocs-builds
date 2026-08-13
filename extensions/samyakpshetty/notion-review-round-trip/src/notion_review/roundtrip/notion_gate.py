@@ -34,6 +34,7 @@ from notion_review.notion.queue_schema import (
     outcome_properties,
     queue_properties,
     row_properties,
+    summarize,
 )
 from notion_review.roundtrip.inbound import plain_text_from_html
 from notion_review.store import Store
@@ -122,7 +123,7 @@ def announce_inline(round_: ReviewRound, notion: NotionClient, store: Store) -> 
                 if (proposal.source == ChangeSource.COMMENT_INTENT)
                 else ""
             )
-            body = f"{proposal.reviewer_name} proposes{authored}: “{before}” → “{after}” · "
+            body = f"{proposal.reviewer_name} proposes{authored}: {summarize(before, after)} · "
         # One click to decide: the comment links straight to this change's row in the queue, where
         # Status is a two-click select. Replying "approve" or "reject" here works too, for anyone
         # who would rather answer in the thread than open the row.
