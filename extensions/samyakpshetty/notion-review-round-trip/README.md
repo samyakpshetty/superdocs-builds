@@ -148,9 +148,23 @@ docker compose run --rm --no-deps app python -m notion_review.cli \
 make watch     # add `--once` under cron for a scheduled job instead of a long-running process
 ```
 
-Documents to review appear in `outbox/`; drop the marked-up file into `inbox/` and the service takes
-it from there. Point both at a synced shared folder and reviewers collect and return files
-themselves.
+**How the document reaches the reviewer, and gets back.** The service writes each styled `.docx`
+into `outbox/`, and watches `inbox/` for it to return:
+
+```
+Notion row → service → SuperDocs export → outbox/ ──► the reviewer opens it in Word
+                                                              │  tracked changes + comments
+   page updated ◄── owner approves in Notion ◄── inbox/ ◄──────┘
+```
+
+Put both folders inside a shared drive (Drive, Dropbox, SharePoint) that your reviewers can see,
+and that middle hop needs nobody: the reviewer opens the document straight from the folder, marks it
+up in Word, and saves it back into `inbox/`. They need no account, no login, and never see Notion.
+
+Without a shared folder it is two manual steps — you email the file from `outbox/` and save their
+reply into `inbox/`. Email is deliberately not built in yet: sending a reviewer a document while
+having no inbox to receive their reply would promise something the system cannot keep. Both halves
+belong behind the `Delivery` and `Intake` seams, together.
 
 **Or drive it by hand** — the same gate, approved in the terminal instead of in Notion. Useful for
 trying it once, for CI, or for debugging without setting up the requests database:
