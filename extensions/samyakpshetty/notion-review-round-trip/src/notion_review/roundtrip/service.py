@@ -26,8 +26,10 @@ from notion_review.notion.base import NotionClient
 from notion_review.roundtrip.graph import InboundController
 from notion_review.roundtrip.intake import Intake, ReturnedReview
 from notion_review.roundtrip.notion_gate import (
+    announce_inline,
     publish_pending,
     read_decisions,
+    read_inline_decisions,
     record_outcomes,
 )
 from notion_review.store import Store
@@ -111,7 +113,7 @@ class ReviewService:
             report.rejected.append(item.filename)
             return
 
-        report.queued += publish_pending(gate.round, self._notion, self._store)
+        report.queued += self._offer(gate.round)
         self._intake.accept(item)
         report.ingested.append(round_id)
         _log.info(
@@ -119,9 +121,26 @@ class ReviewService:
             extra={"round_id": round_id, "file": item.filename, "pending": len(gate.pending)},
         )
 
+    def _offer(self, round_: ReviewRound) -> int:
+        """Put each pending change to the owner both ways: on the line, and in the queue."""
+        queued = publish_pending(round_, self._notion, self._store)
+        announce_inline(round_, self._notion, self._store)
+        return queued
+
+    def _decisions(self, round_: ReviewRound) -> list[dict[str, object]]:
+        """Whatever the owner decided, from either surface; a reply and a Status agree or the
+        first one seen wins, since both mean the same thing for a given change."""
+        merged: dict[str, dict[str, object]] = {}
+        for decision in (
+            *read_inline_decisions(round_, self._notion),
+            *read_decisions(round_, self._notion),
+        ):
+            merged.setdefault(str(decision["proposal_id"]), decision)
+        return list(merged.values())
+
     def _advance(self, round_: ReviewRound, report: TickReport) -> None:
         """Apply whatever the owner has decided in Notion, then queue the next batch."""
-        decisions = read_decisions(round_, self._notion)
+        decisions = self._decisions(round_)
         if not decisions:
             return  # still waiting on the owner; nothing to do this tick
         before = sum(1 for p in round_.proposals if p.status.value == "applied")
@@ -129,7 +148,7 @@ class ReviewService:
         record_outcomes(final, self._notion, final.proposals)
         report.applied += sum(1 for p in final.proposals if p.status.value == "applied") - before
         if final.pending():
-            report.queued += publish_pending(final, self._notion, self._store)
+            report.queued += self._offer(final)
         else:
             report.completed.append(final.id)
         self._store.save(final)

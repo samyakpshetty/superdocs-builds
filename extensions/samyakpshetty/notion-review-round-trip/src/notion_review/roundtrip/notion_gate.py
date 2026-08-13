@@ -1,13 +1,22 @@
 """The approval gate, driven from inside Notion.
 
 Approval is an *operation*, not a screen: ``InboundController`` exposes it, and any surface can
-drive it. This driver puts that surface where the page owner already works. Each pending change
-becomes a row in a review-queue database on the page; the owner sets **Status** to Approved or
-Rejected in Notion, and this module reads those decisions, hands them to the controller, and writes
-the outcome back onto each row. No second app, no extra login, no hosted frontend.
+drive it. This driver puts that surface where the page owner already works — no second app, no
+extra login, no hosted frontend — and offers each change two ways, because the two answer
+different needs:
 
-Decisions are collected by polling — Notion's webhooks are not relied on here — which is fine for a
-review that takes hours or days, and keeps the integration to one moving part.
+* **On the line.** Every pending change is commented onto the exact block it would edit, so the
+  owner sees Notion's comment marker where the change actually is, reads what is proposed, and
+  replies "approve" or "reject" without going anywhere. A reply that says neither is left
+  undecided rather than guessed at, and our own proposal card is never mistaken for an answer.
+* **In a queue.** The same changes are rows in a review-queue database on the page, with a Status
+  field, so a review with dozens of changes can be sorted, filtered, and decided in bulk — and the
+  outcome of each one is written back onto its row.
+
+Comments are metadata, so neither surface inserts or removes a single block: the page itself is
+only ever touched by an approved change. Decisions are collected by polling — Notion's webhooks are
+deliberately not relied on — which is fine for a review measured in hours or days and keeps the
+integration to one moving part.
 """
 
 from __future__ import annotations
@@ -15,7 +24,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
-from notion_review.domain import ProposedChange, ReviewRound
+from notion_review.domain import ChangeSource, ProposedChange, ReviewRound
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
 from notion_review.notion.models import plain_text
@@ -81,6 +90,97 @@ def publish_pending(round_: ReviewRound, notion: NotionClient, store: Store) -> 
     store.save(round_)
     _log.info("queue_published", extra={"round_id": round_.id, "rows": added})
     return added
+
+
+_APPROVE_WORDS = frozenset({"approve", "approved", "approving", "yes", "lgtm", "ok", "okay", "👍"})
+_REJECT_WORDS = frozenset({"reject", "rejected", "rejecting", "no", "decline", "declined", "👎"})
+
+
+def announce_inline(round_: ReviewRound, notion: NotionClient, store: Store) -> int:
+    """Comment each pending change onto the block it would edit. Returns comments posted.
+
+    The queue database is good for deciding many changes at once, but it sits away from the text.
+    This puts the proposal where the change actually is: the owner sees Notion's comment marker on
+    that exact line, reads what is proposed, and can simply reply "approve" or "reject" — or open
+    the linked queue row if they would rather use the Status field. Two ways to decide, one gate.
+    """
+    posted = 0
+    for proposal in round_.pending():
+        if proposal.discussion_id:
+            continue  # already announced (idempotent across restarts)
+        before = plain_text_from_html(proposal.old_html)
+        after = plain_text_from_html(proposal.new_html)
+        if proposal.source == ChangeSource.COMMENT:
+            body = (
+                f"{proposal.reviewer_name} asked, in review round {round_.id}: "
+                f"“{proposal.reviewer_comment}”. Reply approve to keep this note on the page, "
+                f"or reject to drop it."
+            )
+        else:
+            authored = (
+                " (written by SuperDocs from the reviewer's comment)"
+                if (proposal.source == ChangeSource.COMMENT_INTENT)
+                else ""
+            )
+            body = (
+                f"{proposal.reviewer_name} proposes{authored}: “{before}” → “{after}”. "
+                f"Reply approve or reject."
+            )
+        try:
+            comment = notion.create_comment(
+                block_id=proposal.notion_block_id,
+                page_id=proposal.notion_page_id or round_.notion_page_id or None,
+                rich_text=plain_text(body),
+            )
+        except NotionError as exc:
+            _log.warning(
+                "inline_announce_failed",
+                extra={"round_id": round_.id, "proposal_id": proposal.id, "error": str(exc)},
+            )
+            continue
+        proposal.discussion_id = comment.discussion_id
+        if not round_.bot_user_id:
+            round_.bot_user_id = comment.author  # so a human reply is told from our own card
+        posted += 1
+    store.save(round_)
+    _log.info("inline_announced", extra={"round_id": round_.id, "comments": posted})
+    return posted
+
+
+def _decision_in(text: str) -> bool | None:
+    """Read a reply as a decision. Anything unrecognised is left undecided, never guessed."""
+    words = {word.strip(".,!;:()").lower() for word in text.split()}
+    if words & _APPROVE_WORDS:
+        return True
+    if words & _REJECT_WORDS:
+        return False
+    return None
+
+
+def read_inline_decisions(round_: ReviewRound, notion: NotionClient) -> list[dict[str, object]]:
+    """Decisions the owner replied with, in the comment thread on each changed block."""
+    decisions: list[dict[str, object]] = []
+    for proposal in round_.pending():
+        if not proposal.discussion_id:
+            continue
+        try:
+            thread = notion.list_comments(proposal.notion_block_id)
+        except NotionError as exc:
+            _log.warning(
+                "inline_read_failed",
+                extra={"round_id": round_.id, "block": proposal.notion_block_id, "error": str(exc)},
+            )
+            continue
+        for comment in thread:
+            if comment.discussion_id != proposal.discussion_id:
+                continue
+            if comment.author == round_.bot_user_id:
+                continue  # our own proposal card, not a reply
+            decided = _decision_in(comment.plain())
+            if decided is not None:
+                decisions.append({"proposal_id": proposal.id, "approved": decided})
+                break
+    return decisions
 
 
 def read_decisions(round_: ReviewRound, notion: NotionClient) -> list[dict[str, object]]:

@@ -24,6 +24,8 @@ from notion_review.notion.models import (
 class FakeNotionClient:
     """In-memory implementation of :class:`~notion_review.notion.base.NotionClient`."""
 
+    BOT_ID = "bot-superdocs-review-bridge"  # what our own comments are authored by
+
     def __init__(self) -> None:
         self._pages: dict[str, Page] = {}
         self._blocks: dict[str, Block] = {}  # stored without children resolved
@@ -113,11 +115,29 @@ class FakeNotionClient:
             id=self._next("comment"),
             parent_id=parent,
             rich_text=list(rich_text),
-            author="SuperDocs Review Bridge",
+            author=self.BOT_ID,
             created_time="2026-01-01T00:00:00Z",
+            discussion_id=self._next("discussion"),
         )
         self._comments.append(comment)
         return comment
+
+    def list_comments(self, block_id: str) -> list[Comment]:
+        return [c for c in self._comments if c.parent_id == block_id]
+
+    def reply(self, discussion_id: str, text: str, *, author: str = "human-owner") -> Comment:
+        """Stand in for a person replying in a Notion comment thread (tests and the demo)."""
+        parent = next((c.parent_id for c in self._comments if c.discussion_id == discussion_id), "")
+        reply = Comment(
+            id=self._next("comment"),
+            parent_id=parent,
+            rich_text=plain_text(text),
+            author=author,
+            created_time="2026-01-01T00:00:00Z",
+            discussion_id=discussion_id,
+        )
+        self._comments.append(reply)
+        return reply
 
     # -- the in-Notion review queue --------------------------------------------
     def create_database(

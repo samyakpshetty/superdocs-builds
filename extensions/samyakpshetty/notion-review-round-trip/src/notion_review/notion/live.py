@@ -125,13 +125,23 @@ class LiveNotionClient:
                 data = self._request("POST", "/v1/comments", json=payload).json()
             else:
                 raise
-        return Comment(
-            id=data.get("id", ""),
-            parent_id=block_id or page_id or "",
-            rich_text=rich_text,
-            author=str((data.get("created_by") or {}).get("id", "")),
-            created_time=data.get("created_time", ""),
-        )
+        return _comment_from_json(data, fallback_parent=block_id or page_id or "")
+
+    def list_comments(self, block_id: str) -> list[Comment]:
+        comments: list[Comment] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"block_id": block_id, "page_size": 100}
+            if cursor:
+                params["start_cursor"] = cursor
+            data = self._request("GET", "/v1/comments", params=params).json()
+            comments.extend(
+                _comment_from_json(item, fallback_parent=block_id)
+                for item in data.get("results", [])
+            )
+            if not data.get("has_more"):
+                return comments
+            cursor = data.get("next_cursor")
 
     # -- the in-Notion review queue -------------------------------------------
     def create_database(
@@ -219,6 +229,18 @@ def block_from_json(data: dict[str, Any]) -> Block:
         rich_text=_rich_list(content.get("rich_text")),
         has_children=data.get("has_children", False),
         meta=meta,
+    )
+
+
+def _comment_from_json(data: dict[str, Any], *, fallback_parent: str) -> Comment:
+    parent = data.get("parent") or {}
+    return Comment(
+        id=data.get("id", ""),
+        parent_id=parent.get("block_id") or parent.get("page_id") or fallback_parent,
+        rich_text=_rich_list(data.get("rich_text")),
+        author=str((data.get("created_by") or {}).get("id", "")),
+        created_time=data.get("created_time", ""),
+        discussion_id=data.get("discussion_id", ""),
     )
 
 

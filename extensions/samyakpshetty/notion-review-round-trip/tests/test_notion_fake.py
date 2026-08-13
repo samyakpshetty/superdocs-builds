@@ -80,7 +80,8 @@ def test_comment_carries_attribution() -> None:
     comments = client.comments_for(block_id)
     assert len(comments) == 1
     assert "Dana" in comments[0].plain()
-    assert comments[0].author == "SuperDocs Review Bridge"
+    assert comments[0].author == FakeNotionClient.BOT_ID  # authored by the integration, not a human
+    assert comments[0].discussion_id  # a thread the owner can reply into
 
 
 def test_missing_page_raises_typed_error() -> None:

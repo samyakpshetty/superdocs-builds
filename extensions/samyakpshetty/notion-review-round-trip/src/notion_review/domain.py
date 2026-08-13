@@ -96,6 +96,7 @@ class ProposedChange(BaseModel):
     links: list[str] = Field(default_factory=list)  # URLs the edit introduces; shown at the gate
     relayed: bool = False  # this decision has been sent to SuperDocs' approve (never sent twice)
     queue_row_id: str = ""  # the Notion review-queue row the owner decides this change in
+    discussion_id: str = ""  # the comment thread on the block, where the owner can reply instead
     status: ProposalStatus = ProposalStatus.PENDING
     error: str | None = None
 
@@ -129,6 +130,7 @@ class ReviewRound(BaseModel):
     ops_spent: int = 0  # SuperDocs operations consumed by this round
     review_url: str | None = None  # link recorded back on the Notion page
     queue_database_id: str = ""  # the in-Notion review queue the owner approves changes in
+    bot_user_id: str = ""  # our own Notion identity, so a human's reply is told from our comment
     stage_timings_ms: dict[str, float] = Field(default_factory=dict)  # where the time went
 
     def touch(self) -> None:

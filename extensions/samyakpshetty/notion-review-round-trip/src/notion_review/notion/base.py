@@ -49,6 +49,10 @@ class NotionClient(Protocol):
         """Attach a comment to a page or block — how reviewer attribution reaches Notion."""
         ...
 
+    def list_comments(self, block_id: str) -> list[Comment]:
+        """Every comment on a block, threads included — this is how a reply is read back."""
+        ...
+
     # -- the in-Notion review queue: where the page owner approves each change ---------------
     def create_database(
         self, *, parent_page_id: str, title: str, properties: dict[str, Any]

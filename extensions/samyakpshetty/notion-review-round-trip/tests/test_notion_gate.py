@@ -9,9 +9,11 @@ from notion_review.notion import FakeNotionClient
 from notion_review.notion.queue_schema import STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
 from notion_review.roundtrip import InboundController, send_for_review
 from notion_review.roundtrip.notion_gate import (
+    announce_inline,
     await_decisions,
     publish_pending,
     read_decisions,
+    read_inline_decisions,
     record_outcomes,
 )
 from notion_review.store import SQLiteStore
@@ -95,6 +97,68 @@ def test_owner_decisions_in_notion_drive_the_round_to_completion() -> None:
     # The outcome is written back onto each row, so the queue shows what happened.
     assert "Applied" in str(notion.row_properties(applied.queue_row_id)["Outcome"])
     assert "Rejected" in str(notion.row_properties(rejected.queue_row_id)["Outcome"])
+
+
+def test_each_change_is_announced_on_the_block_it_would_edit() -> None:
+    notion, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+
+    posted = announce_inline(gate.round, notion, store)
+
+    assert posted == len(gate.pending) == 2
+    for proposal in gate.round.pending():
+        # The proposal sits on the very block it would change, not at the bottom of the page.
+        thread = notion.list_comments(proposal.notion_block_id)
+        card = next(c for c in thread if c.discussion_id == proposal.discussion_id)
+        assert proposal.reviewer_name in card.plain()
+        assert "approve" in card.plain().lower()
+    assert gate.round.bot_user_id  # we know our own voice, to tell a reply from our card
+
+
+def test_announcing_twice_does_not_repeat_the_comment() -> None:
+    notion, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+
+    announce_inline(gate.round, notion, store)
+    again = announce_inline(gate.round, notion, store)
+
+    assert again == 0
+
+
+def test_replying_approve_on_the_line_decides_the_change() -> None:
+    notion, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    announce_inline(gate.round, notion, store)
+    first, second = gate.round.pending()
+
+    notion.reply(first.discussion_id, "Approve — good catch.")
+    notion.reply(second.discussion_id, "reject, we'll handle this separately")
+
+    decisions = read_inline_decisions(gate.round, notion)
+
+    assert {str(d["proposal_id"]): d["approved"] for d in decisions} == {
+        first.id: True,
+        second.id: False,
+    }
+
+
+def test_our_own_card_is_never_mistaken_for_a_reply() -> None:
+    notion, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    announce_inline(gate.round, notion, store)  # our card says "Reply approve or reject"
+
+    assert read_inline_decisions(gate.round, notion) == []  # nobody has replied yet
+
+
+def test_an_ambiguous_reply_is_left_undecided() -> None:
+    notion, store, controller, round_id = _setup()
+    gate = controller.start(round_id=round_id, docx_bytes=reviewed_docx())
+    announce_inline(gate.round, notion, store)
+    proposal = gate.round.pending()[0]
+
+    notion.reply(proposal.discussion_id, "hmm, let me think about this one")
+
+    assert read_inline_decisions(gate.round, notion) == []  # never guessed
 
 
 def test_a_partly_decided_queue_applies_only_what_was_decided() -> None:

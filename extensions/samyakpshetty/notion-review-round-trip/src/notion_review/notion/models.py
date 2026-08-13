@@ -74,8 +74,9 @@ class Comment(BaseModel):
     id: str
     parent_id: str  # page id or block id the comment hangs on
     rich_text: list[RichText]
-    author: str = ""
+    author: str = ""  # the id of whoever wrote it — how a human reply is told from ours
     created_time: str = ""
+    discussion_id: str = ""  # the thread it belongs to; replies share it
 
     def plain(self) -> str:
         return "".join(run.text for run in self.rich_text)
