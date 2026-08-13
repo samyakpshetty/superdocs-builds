@@ -20,13 +20,17 @@ from typing import Any
 
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient
-from notion_review.notion.models import QueueRow
+from notion_review.notion.models import FileRef, QueueRow
 
 _log = get_logger("notion_review.requests")
 
 STATUS_REQUESTED = "Requested"
 STATUS_SENT = "Sent"
 STATUS_FAILED = "Failed"
+
+DOCUMENT_PROP = "Document"  # the styled .docx we send out, attached to the row
+RETURNED_PROP = "Returned"  # where reviewers put their marked-up copies back
+TAKEN_IN_PROP = "Taken in"  # returned files already handed to the round-trip
 
 _PROP_LIMIT = 1900
 # A Notion page id is 32 hex characters, with or without dashes — pull it out of a pasted URL.
@@ -61,7 +65,57 @@ def request_properties() -> dict[str, Any]:
         "Reviewers": {"rich_text": {}},
         "Round": {"rich_text": {}},
         "Result": {"rich_text": {}},
+        # The document goes out on the row and comes back on the row, so the whole handoff is
+        # visible in Notion and the owner never goes looking in a folder on a server.
+        DOCUMENT_PROP: {"files": {}},
+        RETURNED_PROP: {"files": {}},
+        TAKEN_IN_PROP: {"rich_text": {}},
     }
+
+
+def files_in(properties: dict[str, Any], name: str) -> list[FileRef]:
+    """The files attached to one property, as name and (signed, expiring) URL."""
+    prop = properties.get(name) or {}
+    entries = prop.get("files")
+    if not isinstance(entries, list):
+        return []
+    files: list[FileRef] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        # Notion hosts it (``file``) or it was linked from elsewhere (``external``); both read
+        # the same way here, and either is a document a reviewer can have put there.
+        holder = entry.get("file") or entry.get("external") or {}
+        url = holder.get("url", "") if isinstance(holder, dict) else ""
+        if url:
+            files.append(FileRef(name=str(entry.get("name") or ""), url=str(url)))
+    return files
+
+
+def attachment_properties(*, upload_id: str, filename: str, name: str = DOCUMENT_PROP) -> Any:
+    """The payload that attaches an uploaded file to a row's ``files`` property."""
+    return {
+        name: {
+            "type": "files",
+            "files": [{"type": "file_upload", "file_upload": {"id": upload_id}, "name": filename}],
+        }
+    }
+
+
+def taken_in(properties: dict[str, Any]) -> set[str]:
+    """Which returned files this row has already handed over, by name."""
+    return {name for name in _text_of(properties, TAKEN_IN_PROP).split("\n") if name}
+
+
+def taken_in_properties(names: set[str]) -> dict[str, Any]:
+    """Record which returned files have been handed over, so a poll does not re-fetch them.
+
+    Kept on the row rather than in memory so a restart does not download every attachment again.
+    It is an optimisation, not the correctness boundary: a file that slips through is recognised
+    by its content hash further in and costs nothing.
+    """
+    listed = "\n".join(sorted(names))[:_PROP_LIMIT]
+    return {TAKEN_IN_PROP: {"rich_text": [{"type": "text", "text": {"content": listed}}]}}
 
 
 def create_request_database(notion: NotionClient, *, parent_page_id: str) -> str:

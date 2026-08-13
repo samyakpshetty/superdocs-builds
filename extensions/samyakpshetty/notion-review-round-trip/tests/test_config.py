@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from notion_review.clients import build_channel
 from notion_review.config import Config, ConfigError
+from notion_review.notion import FakeNotionClient
+from notion_review.roundtrip.delivery import FolderDelivery, NotionRowDelivery
+from notion_review.roundtrip.intake import FolderIntake, NotionRowIntake
 
 
 def test_defaults_are_fake_and_frugal() -> None:
@@ -47,3 +53,37 @@ def test_config_is_frozen() -> None:
     cfg = Config.from_env({})
     with pytest.raises(Exception):  # noqa: B017 - pydantic frozen raises ValidationError
         cfg.provider = "live"  # type: ignore[misc]
+
+
+def test_the_handoff_defaults_to_notion_and_only_accepts_the_two_channels() -> None:
+    assert Config.from_env({}).handoff == "notion"
+    assert Config.from_env({"HANDOFF": "folder"}).handoff == "folder"
+    with pytest.raises(ConfigError):
+        Config.from_env({"HANDOFF": "email"})
+
+
+def test_the_channel_is_a_pair_and_falls_back_to_folders_without_a_requests_database(
+    tmp_path: Path,
+) -> None:
+    # Both halves come from one decision: a channel that sends but cannot receive is a promise
+    # the round-trip cannot keep.
+    notion, _ = FakeNotionClient.build_sample()
+    inbox, outbox = str(tmp_path / "in"), str(tmp_path / "out")
+
+    on_rows = build_channel(
+        Config.from_env({"NOTION_REQUESTS_DB": "db_1"}), notion, inbox=inbox, outbox=outbox
+    )
+    assert isinstance(on_rows[0], NotionRowIntake) and isinstance(on_rows[1], NotionRowDelivery)
+
+    # No requests database to hang the files on, so the folder channel is what is left.
+    without_db = build_channel(Config.from_env({}), notion, inbox=inbox, outbox=outbox)
+    assert isinstance(without_db[0], FolderIntake) and isinstance(without_db[1], FolderDelivery)
+
+    asked_for_folders = build_channel(
+        Config.from_env({"NOTION_REQUESTS_DB": "db_1", "HANDOFF": "folder"}),
+        notion,
+        inbox=inbox,
+        outbox=outbox,
+    )
+    assert isinstance(asked_for_folders[0], FolderIntake)
+    assert isinstance(asked_for_folders[1], FolderDelivery)

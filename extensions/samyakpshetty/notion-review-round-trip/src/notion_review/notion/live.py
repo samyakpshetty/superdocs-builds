@@ -41,11 +41,10 @@ class LiveNotionClient:
     ) -> None:
         self._client = httpx.Client(
             base_url=_API,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Notion-Version": version,
-                "Content-Type": "application/json",
-            },
+            # No default Content-Type: httpx sets ``application/json`` for a ``json=`` body and
+            # the correct multipart boundary for a file upload. A fixed header would break the
+            # second, and Notion rejects a multipart body labelled as JSON.
+            headers={"Authorization": f"Bearer {token}", "Notion-Version": version},
             timeout=httpx.Timeout(30.0),
         )
         self._min_interval = config.notion_min_interval_s if config else 0.34
@@ -59,13 +58,14 @@ class LiveNotionClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
     ) -> httpx.Response:
         attempt = 0
         while True:
             wait = self._min_interval - (time.monotonic() - self._last_call)
             if wait > 0:
                 time.sleep(wait)
-            resp = self._client.request(method, path, json=json, params=params)
+            resp = self._client.request(method, path, json=json, params=params, files=files)
             self._last_call = time.monotonic()
             if resp.status_code == 404:
                 raise NotionNotFoundError(f"{method} {path} -> 404")
@@ -189,6 +189,38 @@ class LiveNotionClient:
 
     def update_row(self, *, page_id: str, properties: dict[str, Any]) -> None:
         self._request("PATCH", f"/v1/pages/{page_id}", json={"properties": properties})
+
+    def upload_file(self, *, content: bytes, filename: str, content_type: str) -> str:
+        """Create the upload, then send the bytes; returns the id to attach it with."""
+        created = self._request(
+            "POST", "/v1/file_uploads", json={"filename": filename, "content_type": content_type}
+        ).json()
+        upload_id = str(created.get("id", ""))
+        if not upload_id:
+            raise NotionError(f"Notion did not return a file-upload id for {filename}")
+        # The send step is multipart, not JSON, so the client's default Content-Type has to go:
+        # httpx sets the multipart boundary itself and an inherited header would corrupt it.
+        self._request(
+            "POST",
+            f"/v1/file_uploads/{upload_id}/send",
+            files={"file": (filename, content, content_type)},
+        )
+        _log.info("file_uploaded", extra={"document": filename, "bytes": len(content)})
+        return upload_id
+
+    def download_file(self, url: str) -> bytes:
+        """Fetch a Notion-hosted file from its signed URL.
+
+        Deliberately a bare client: the URL is pre-signed object storage, and sending our Notion
+        token to a third-party host would leak the credential for no benefit.
+        """
+        try:
+            with httpx.Client(timeout=httpx.Timeout(60.0), follow_redirects=True) as plain:
+                response = plain.get(url)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise NotionError(f"could not download the attached file: {exc}") from exc
+        return response.content
 
     def close(self) -> None:
         self._client.close()

@@ -79,3 +79,16 @@ class NotionClient(Protocol):
     def update_row(self, *, page_id: str, properties: dict[str, Any]) -> None:
         """Write a row's properties — used to record the outcome once a change is applied."""
         ...
+
+    # -- files on a row: the review document out, and the reviewer's copy back ----------------
+    def upload_file(self, *, content: bytes, filename: str, content_type: str) -> str:
+        """Upload a file to Notion; returns the id to attach it to a ``files`` property with.
+
+        Two calls in Notion's API — create the upload, then send the bytes — and the id is only
+        useful until it is attached, so callers attach it straight away via ``update_row``.
+        """
+        ...
+
+    def download_file(self, url: str) -> bytes:
+        """Fetch a file Notion hosts, from the signed URL a ``files`` property hands back."""
+        ...

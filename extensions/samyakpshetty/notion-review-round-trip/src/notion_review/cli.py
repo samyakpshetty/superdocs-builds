@@ -13,7 +13,7 @@ from pathlib import Path
 
 import click
 
-from notion_review.clients import build_clients, build_delivery
+from notion_review.clients import build_channel, build_clients
 from notion_review.config import Config
 from notion_review.docx_markup.stamp import identify_round, stamp_round_id
 from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange, ReviewRound
@@ -28,7 +28,7 @@ from notion_review.roundtrip import (
 )
 from notion_review.roundtrip.checkpoint import open_checkpointer
 from notion_review.roundtrip.inbound import plain_text_from_html
-from notion_review.roundtrip.intake import FolderIntake
+from notion_review.roundtrip.intake import NotionRowIntake
 from notion_review.roundtrip.notion_gate import (
     await_decisions,
     publish_pending,
@@ -255,20 +255,23 @@ def watch(inbox: str, outbox: str, state: str, interval: float, once: bool) -> N
     setup_logging(config.log_format)
     notion, superdocs = build_clients(config)
     store = SQLiteStore(state)
+    intake, delivery = build_channel(config, notion, inbox=inbox, outbox=outbox)
     service = ReviewService(
-        intake=FolderIntake(inbox),
+        intake=intake,
         notion=notion,
         superdocs=superdocs,
         store=store,
         config=config,
         checkpointer=open_checkpointer(f"{state}.ckpt"),
-        delivery=build_delivery(config, outbox),
+        delivery=delivery,
         requests_database_id=config.notion_requests_database_id,
     )
-    click.secho(f"Watching {inbox}/ for returned reviews…", fg="cyan", bold=True)
-    if config.notion_requests_database_id:
-        click.echo("  Requests in Notion send pages out; returned files are matched and queued.")
+    if isinstance(intake, NotionRowIntake):
+        click.secho("Watching the Review requests database…", fg="cyan", bold=True)
+        click.echo("  A row sends its page out and the document lands on that row.")
+        click.echo("  Reviewers drop the marked-up copy back on the row; nobody leaves Notion.")
     else:
+        click.secho(f"Watching {inbox}/ for returned reviews…", fg="cyan", bold=True)
         click.echo("  Drop a marked-up .docx in; it is matched, proposed, and queued in Notion.")
     while True:
         report = service.tick()
@@ -277,7 +280,9 @@ def watch(inbox: str, outbox: str, state: str, interval: float, once: bool) -> N
         for round_id in report.ingested:
             click.secho(f"  ✓ took in a review for {round_id}", fg="green")
         for name in report.rejected:
-            click.secho(f"  ! set aside {name} (see {inbox}/failed)", fg="yellow")
+            click.secho(f"  ! set aside {name} — see its Result in Notion", fg="yellow")
+        for name in report.deferred:
+            click.echo(f"  · {name} waits for the current changes to be decided")
         if report.applied:
             click.echo(f"  → applied {report.applied} approved change(s) to Notion")
         for round_id in report.completed:

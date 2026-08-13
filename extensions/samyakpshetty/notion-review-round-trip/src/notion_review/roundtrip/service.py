@@ -162,9 +162,10 @@ class ReviewService:
                     subject=f"For review: {filename}",
                     body=(
                         "This document is out for review. Mark it up in Word with tracked "
-                        "changes and comments, then put it back in the review folder — it "
-                        "carries its own review id, so it is matched automatically."
+                        "changes and comments, then send it back — it carries its own review "
+                        "id, so it is matched automatically however it returns."
                     ),
+                    reference=request.row_id,
                 )
             )
         except (NotionError, SuperDocsError, DocxError, ValueError) as exc:

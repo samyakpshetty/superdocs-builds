@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from notion_review.logging import get_logger
+from notion_review.notion.base import NotionClient
+from notion_review.roundtrip.requests import DOCUMENT_PROP, attachment_properties
 
 _log = get_logger("notion_review.delivery")
 
@@ -33,6 +35,7 @@ class Deliverable:
     recipients: list[str] = field(default_factory=list)
     subject: str = "Document for review"
     body: str = ""
+    reference: str = ""  # the Notion request row this came from, for channels that write back
 
 
 @runtime_checkable
@@ -63,3 +66,42 @@ class FolderDelivery:
             extra={"path": str(destination), "recipients": len(item.recipients)},
         )
         return f"written to {destination}"
+
+
+class NotionRowDelivery:
+    """Attach the review document to the Notion row that asked for it.
+
+    This is the shortest possible distance between asking for a review and having the document:
+    the person clicks the button on their page, and moments later the styled Word file is sitting
+    on that row, in Notion, where they already are. No folder on a server, no sync client, and no
+    terminal anywhere in the loop — and because the round id is stamped inside the file, the copy
+    that comes back is matched however it travels.
+
+    A reviewer inside the workspace collects it from the row and drops their marked-up copy back
+    onto the same row. A reviewer outside it is sent the file by the owner, from Notion, and the
+    reply goes back on the row the same way.
+    """
+
+    DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    def __init__(self, notion: NotionClient, *, property_name: str = DOCUMENT_PROP) -> None:
+        self._notion = notion
+        self._property = property_name
+
+    def deliver(self, item: Deliverable) -> str:
+        if not item.reference:
+            raise ValueError("a Notion-row delivery needs the request row it belongs to")
+        upload_id = self._notion.upload_file(
+            content=item.content, filename=item.filename, content_type=self.DOCX_MIME
+        )
+        self._notion.update_row(
+            page_id=item.reference,
+            properties=attachment_properties(
+                upload_id=upload_id, filename=item.filename, name=self._property
+            ),
+        )
+        _log.info(
+            "delivered_to_notion_row",
+            extra={"row": item.reference, "document": item.filename, "bytes": len(item.content)},
+        )
+        return f"attached to this row as {item.filename}"

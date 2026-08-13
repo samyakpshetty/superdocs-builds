@@ -99,6 +99,17 @@ class DatabaseRef(BaseModel):
     url: str = ""
 
 
+class FileRef(BaseModel):
+    """A file attached to a row — the review document going out, or the marked-up copy back.
+
+    Notion hands back a signed URL for a file it hosts, and that URL expires, so it is fetched
+    when it is read rather than stored anywhere.
+    """
+
+    name: str
+    url: str
+
+
 class QueueRow(BaseModel):
     """One row of an in-Notion database: a proposed change, or a request to start a review."""
 

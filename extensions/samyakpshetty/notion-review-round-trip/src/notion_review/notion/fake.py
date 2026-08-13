@@ -21,6 +21,8 @@ from notion_review.notion.models import (
     plain_text,
 )
 
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
 
 class FakeNotionClient:
     """In-memory implementation of :class:`~notion_review.notion.base.NotionClient`."""
@@ -35,6 +37,8 @@ class FakeNotionClient:
         self._databases: dict[str, list[str]] = {}  # database id -> ordered row ids
         self._database_titles: dict[str, str] = {}
         self._rows: dict[str, dict[str, object]] = {}  # row id -> Notion property payloads
+        self._uploads: dict[str, bytes] = {}  # upload id -> file contents
+        self._upload_names: dict[str, str] = {}
         self._counter = 0
 
     # -- construction helpers (tests / demo build the tree with these) ---------
@@ -184,7 +188,52 @@ class FakeNotionClient:
     def update_row(self, *, page_id: str, properties: dict[str, object]) -> None:
         if page_id not in self._rows:
             raise NotionNotFoundError(f"row not found: {page_id}")
-        self._rows[page_id].update(properties)
+        self._rows[page_id].update(
+            {name: self._settle(value) for name, value in properties.items()}
+        )
+
+    def _settle(self, value: object) -> object:
+        """Store a written property in the shape a *reader* gets back from Notion.
+
+        Notion does not hand back what you wrote: an attached ``file_upload`` comes back as a
+        hosted file with a URL, and a rich-text run comes back with the ``plain_text`` Notion
+        derives from it. A fake that stored the write verbatim would agree with the live service
+        on the way in and disagree on the way out — which is exactly the kind of difference that
+        passes every test and then fails in production.
+        """
+        if isinstance(value, dict):
+            for field in ("rich_text", "title"):
+                runs = value.get(field)
+                if isinstance(runs, list):
+                    return {**value, field: [self._settle_run(run) for run in runs]}
+        if not (isinstance(value, dict) and isinstance(value.get("files"), list)):
+            return value
+        settled: list[dict[str, object]] = []
+        for entry in value["files"]:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("type") == "file_upload":
+                reference = entry.get("file_upload")
+                upload_id = reference.get("id", "") if isinstance(reference, dict) else ""
+                settled.append(
+                    {
+                        "name": entry.get("name") or self._upload_names.get(str(upload_id), ""),
+                        "type": "file",
+                        "file": {"url": self.file_url(str(upload_id))},
+                    }
+                )
+            else:
+                settled.append(entry)
+        return {**value, "files": settled}
+
+    @staticmethod
+    def _settle_run(run: object) -> object:
+        """Fill in the ``plain_text`` Notion derives from a written rich-text run."""
+        if not isinstance(run, dict) or "plain_text" in run:
+            return run
+        text = run.get("text")
+        content = text.get("content", "") if isinstance(text, dict) else ""
+        return {**run, "plain_text": content}
 
     def _status_of(self, page_id: str) -> str:
         prop = self._rows[page_id].get("Status")
@@ -197,6 +246,35 @@ class FakeNotionClient:
     def set_row_status(self, page_id: str, status: str) -> None:
         """Stand in for the page owner deciding a change in Notion (tests and the demo)."""
         self.update_row(page_id=page_id, properties={"Status": {"select": {"name": status}}})
+
+    # -- files on a row --------------------------------------------------------
+    def upload_file(self, *, content: bytes, filename: str, content_type: str) -> str:
+        """Hold the bytes and hand back an id, exactly as the two-step live upload does."""
+        upload_id = self._next("upload")
+        self._uploads[upload_id] = content
+        self._upload_names[upload_id] = filename
+        return upload_id
+
+    def download_file(self, url: str) -> bytes:
+        """Serve a file back from its URL, the way a signed Notion URL does."""
+        upload_id = url.rsplit("/", 1)[-1]
+        if upload_id not in self._uploads:
+            raise NotionNotFoundError(f"file not found: {url}")
+        return self._uploads[upload_id]
+
+    def file_url(self, upload_id: str) -> str:
+        """The URL a ``files`` property reports for an uploaded file."""
+        return f"https://files.notion.so/{upload_id}"
+
+    def attach_file(self, page_id: str, *, property_name: str, content: bytes, name: str) -> None:
+        """Stand in for a person dragging their marked-up copy onto a row (tests and the demo)."""
+        upload_id = self.upload_file(content=content, filename=name, content_type=_DOCX_MIME)
+        existing = self._rows[page_id].get(property_name)
+        files: list[dict[str, object]] = []
+        if isinstance(existing, dict) and isinstance(existing.get("files"), list):
+            files = list(existing["files"])
+        files.append({"name": name, "type": "file", "file": {"url": self.file_url(upload_id)}})
+        self.update_row(page_id=page_id, properties={property_name: {"files": files}})
 
     def row_properties(self, page_id: str) -> dict[str, object]:
         return dict(self._rows[page_id])

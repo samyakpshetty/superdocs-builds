@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 ProviderMode = Literal["fake", "live"]
 LogFormat = Literal["json", "console"]
+HandoffMode = Literal["notion", "folder"]
 
 
 class ConfigError(ValueError):
@@ -44,6 +45,11 @@ class Config(BaseModel):
     # The Notion database a team adds a row to when they want a page sent for review. Optional:
     # without it the service only takes in returned files and `send` is the entry point.
     notion_requests_database_id: str = ""
+    # How the document reaches reviewers and comes back. ``notion`` keeps the whole handoff on
+    # the request row, so nobody leaves Notion; ``folder`` uses a watched directory, which is a
+    # real channel when it is a synced shared drive. The round-trip does not care which: the
+    # file carries its own round id and is matched however it returns.
+    handoff: HandoffMode = "notion"
 
     # Durable substrate. None -> the zero-infra SQLite store (used by the keyless suite).
     database_url: str | None = None
@@ -115,6 +121,10 @@ class Config(BaseModel):
         if log_format not in ("json", "console"):
             raise ConfigError(f"LOG_FORMAT must be 'json' or 'console', got {log_format!r}")
 
+        handoff = env.get("HANDOFF", "notion").strip().lower()
+        if handoff not in ("notion", "folder"):
+            raise ConfigError(f"HANDOFF must be 'notion' or 'folder', got {handoff!r}")
+
         sample_raw = env.get("SAMPLE_SIZE")
         return cls(
             provider=provider,
@@ -124,6 +134,7 @@ class Config(BaseModel):
             notion_page_id=env.get("NOTION_PAGE_ID") or None,
             notion_version=env.get("NOTION_VERSION", "2022-06-28"),
             notion_requests_database_id=env.get("NOTION_REQUESTS_DB", ""),
+            handoff=handoff,
             database_url=env.get("DATABASE_URL") or None,
             log_format=log_format,
             sections_per_op=_int("SECTIONS_PER_OP", 25),
