@@ -136,26 +136,33 @@ SUPERDOCS_API_KEY=your-superdocs-key-here
 NOTION_TOKEN=your-notion-token-here
 ```
 
-**4. Send a page and apply the review**
-
-```bash
-make send PAGE=<notion-page-id>      # writes review-<round>.docx, stamped with its round id
-make review FILE=<returned.docx>     # approve each change in the terminal
-make status                          # what every round is doing (ROUND=<id> for one in full)
-```
-
-**5. Or let it run itself.** Create the requests database once, put its id in `.env`, and run the
-service — a team then starts reviews from Notion and never touches a terminal:
+**4. Run it as a service — the way a team actually uses it.** Create the requests database once and
+put its id in `.env`, then start the service. From then on nobody touches a terminal: a row in
+Notion sends a page out, a returned file is matched and proposed, and the owner approves **in
+Notion** — in the review queue or by replying to the comment on the changed line.
 
 ```bash
 docker compose run --rm --no-deps app python -m notion_review.cli \
     init-requests --parent-page-id <a page shared with the integration>
 
-make watch     # the service; add `--once` under cron for a scheduled job instead
+make watch     # add `--once` under cron for a scheduled job instead of a long-running process
 ```
 
-`make status` shows every round, what became of each change, and the ids to trace it
-through both services. `make test-postgres` runs the store against a real Postgres.
+Documents to review appear in `outbox/`; drop the marked-up file into `inbox/` and the service takes
+it from there. Point both at a synced shared folder and reviewers collect and return files
+themselves.
+
+**Or drive it by hand** — the same gate, approved in the terminal instead of in Notion. Useful for
+trying it once, for CI, or for debugging without setting up the requests database:
+
+```bash
+make send PAGE=<notion-page-id>      # writes review-<round>.docx, stamped with its round id
+make review FILE=<returned.docx>     # approve each change in the terminal, y/n
+make status                          # what every round is doing (ROUND=<id> for one in full)
+```
+
+`make status` shows every round, what became of each change, and the ids to trace it through both
+services. `make test-postgres` runs the store against a real Postgres.
 
 </details>
 
