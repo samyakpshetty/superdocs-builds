@@ -6,10 +6,12 @@ a channel hands the service ``ReturnedReview`` items, and the service takes it f
 every returned file carries its own round id (see :mod:`notion_review.docx_markup.stamp`), the
 channel does not need to know anything about reviews.
 
-A watched folder is the implementation here: it is real, it needs no infrastructure, and it is how
-plenty of teams already work (a shared Drive or Dropbox folder syncs into it). An email adapter —
-the reviewer simply replies with the attachment — is the same protocol over IMAP or an inbound-mail
-webhook, and an HTTP upload endpoint is the same protocol again; neither changes anything below.
+Two channels implement it. The default takes the marked-up copy straight off the **Notion row**
+the review was requested from, so the document never leaves the application the team works in. A
+**watched folder** is the other: real infrastructure-free, and how plenty of teams already work
+when a shared Drive or Dropbox folder syncs into it. An email adapter — the reviewer simply replies
+with the attachment — is the same protocol over IMAP, and an HTTP upload endpoint is the same
+protocol again; neither would change anything below.
 """
 
 from __future__ import annotations
@@ -84,6 +86,10 @@ class NotionRowIntake:
         self._database_id = database_id
         self._property = property_name
         self._rows: dict[str, str] = {}  # filename -> the row it came from, for accept/reject
+        # What each row had already taken in when it was last read. Held from the poll so that
+        # marking a file handled is one write and not another read of the whole database — under
+        # Notion's rate limit an avoidable round trip is a third of a second nobody gets back.
+        self._taken: dict[str, set[str]] = {}
 
     def poll(self) -> list[ReturnedReview]:
         try:
@@ -94,6 +100,7 @@ class NotionRowIntake:
         items: list[ReturnedReview] = []
         for row in rows:
             already = taken_in(row.properties)
+            self._taken[row.page_id] = set(already)
             for attached in files_in(row.properties, self._property):
                 if attached.name in already or not attached.name.lower().endswith(".docx"):
                     continue
@@ -128,20 +135,17 @@ class NotionRowIntake:
         row_id = self._rows.pop(item.filename, "")
         if not row_id:
             return
+        handled = self._taken.setdefault(row_id, set())
+        handled.add(item.filename)
+        properties = taken_in_properties(handled)
+        if note:
+            properties["Result"] = {
+                "rich_text": [{"type": "text", "text": {"content": note[:1900]}}]
+            }
         try:
-            row = next(
-                (r for r in self._notion.query_database(self._database_id) if r.page_id == row_id),
-                None,
-            )
-            if row is None:
-                return
-            properties = taken_in_properties(taken_in(row.properties) | {item.filename})
-            if note:
-                properties["Result"] = {
-                    "rich_text": [{"type": "text", "text": {"content": note[:1900]}}]
-                }
             self._notion.update_row(page_id=row_id, properties=properties)
         except NotionError as exc:
+            handled.discard(item.filename)  # the row does not know yet, so neither do we
             # Not fatal: the file is simply offered again next poll and recognised by its hash.
             _log.warning("intake_mark_failed", extra={"row": row_id, "error": str(exc)})
 

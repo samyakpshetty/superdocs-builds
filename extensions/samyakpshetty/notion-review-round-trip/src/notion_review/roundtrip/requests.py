@@ -8,8 +8,13 @@ writes back the round it created.
 
 It is deliberately the same mechanism as the approval queue: the service already polls Notion for
 the owner's decisions, so it polls for their requests too. One pattern, both directions, and the
-owner never leaves Notion. (Notion's button blocks are unsupported by its public API — they read
-back as ``"unsupported"`` — so a database row is what an integration can actually offer.)
+owner never leaves Notion.
+
+A row is also what makes the whole thing a single button. Notion's button blocks cannot be created
+through the public API — they read back as ``"unsupported"`` — but a person can add one to their
+page in Notion itself, with the *Add page to* action pointed at this database and the page filled
+in. Clicking it writes the row, and everything below follows: the document goes out on that row,
+the marked-up copies come back onto it, and the changes appear on the page for approval.
 """
 
 from __future__ import annotations

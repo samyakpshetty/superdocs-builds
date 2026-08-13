@@ -13,14 +13,22 @@ preserving structure and reviewer attribution throughout.
 ## Status
 
 Complete, and proven end to end on both the deterministic providers and the live services.
-**135 tests that need no API key**, plus a Postgres-backed store test; `ruff`, `mypy --strict` and
+**148 tests that need no API key**, plus a Postgres-backed store test; `ruff`, `mypy --strict` and
 `pytest` all green. I verified the one-command claim by cloning the repository fresh, with no
 `.env`: `make check` and `make demo` both run unchanged.
 
-I have driven the full cycle live on a real Notion page several times. Tracked changes and
-AI-authored comment edits landed on the right blocks; a rejected change left its block untouched;
-a second round editing the same blocks was refused by the drift guard rather than overwriting the
-first; and a returned document was picked up and applied with nobody at a terminal.
+I have driven the full cycle live on real Notion pages many times. Tracked changes and AI-authored
+comment edits landed on the right blocks; a rejected change left its block untouched; a second
+round editing the same blocks was refused by the drift guard rather than overwriting the first; and
+a returned document was picked up and applied with nobody at a terminal.
+
+Two live runs are worth naming because they are the claims most easily asserted and not shown:
+
+- **The whole handoff inside Notion.** A request row, the styled `.docx` attached to it by the
+  service, the marked-up copy dropped back onto the same row, approval in the Notion queue, and the
+  block updated — one operation, no folder and no terminal anywhere in the loop.
+- **Multi-document.** Two real Notion pages sent as one packet: a single export containing both, a
+  reviewer change on each, and each change written back to its own page. One operation.
 
 ## Architecture
 
@@ -39,9 +47,13 @@ first; and a returned document was picked up and applied with nobody at a termin
   explanation. All four contract calls are exercised: upload, chat, approve, export.
 - **One headless gate, three drivers**: a review queue *in Notion*, a comment on the changed line
   itself, and a terminal gate for CI or an agent. Decisions from any of them are merged.
-- **The whole cycle runs unattended.** A request row in Notion sends a page out; the document is
-  delivered to a folder reviewers can reach; a returned file is matched by the id it carries,
-  proposed, and queued; the owner's decisions are read back and applied.
+- **The whole cycle runs unattended, and stays inside Notion.** A button writes a request row; the
+  styled document is attached to that row; reviewers put their marked-up copies back on it; each is
+  matched by the id it carries, proposed, and queued; the owner's decisions are read back and
+  applied. Folders are the same pair of seams with a different implementation.
+- **Intake is per submission, not per round.** A review goes to several reviewers and comes back as
+  several files, so a returned copy is identified by a hash of its contents and proposed on its own
+  graph thread, merging into the round's one set of proposals and its one queue.
 - **Durable execution**: the inbound review is a LangGraph graph with a checkpointer and a real
   interrupt at the gate, so a run survives a crash or a days-long pause and resumes where it
   stopped.
@@ -88,14 +100,28 @@ Where the brief or the API was silent, I made a call and recorded it.
 4. **A reviewer's question is not an edit request.** A comment ending in "?" goes to the page owner
    rather than to the AI, which could otherwise fabricate an answer into the document. The
    heuristic is deliberately conservative and the human gate is the backstop.
-5. **Decisions are polled, not pushed.** Notion's button blocks are unsupported by its public API,
-   so a database row is what an integration can actually offer. Polling suits a review measured in
-   hours or days and keeps this to one moving part, with no public endpoint to expose.
+5. **Decisions are polled, not pushed.** Polling suits a review measured in hours or days, keeps
+   this to one moving part, and leaves no public endpoint to expose.
 6. **Reviewer attribution is provenance, not authenticated identity.** Word author names are
    self-declared strings; I report them faithfully and claim nothing more.
-7. **Delivery is a seam with a folder implementation.** Synced to a shared drive that is a real
-   channel. I deliberately did not ship an email sender without an email intake: telling a reviewer
-   to reply to a mailbox nothing reads is a promise the system cannot keep.
+7. **Delivery and intake are one decision, never configured apart.** A channel that can send but
+   not receive is a promise the round-trip cannot keep, so the factory returns both halves together.
+   The default keeps them on the Notion request row; folders are the other implementation, real
+   when synced to a shared drive. I deliberately did not ship an email sender without an email
+   intake, for the same reason.
+8. **A returned file is identified by its contents, not by its round.** Every reviewer marks up
+   their own copy and they all carry the same round id, so keying intake on the round would mean
+   the first copy back silently stood for all of them. The same file twice is a duplicate that
+   costs nothing; a different file is another reviewer.
+9. **A copy that arrives while changes are still at the gate waits its turn.** A SuperDocs session
+   holds one pending proposal set at a time — the same limit the batch loop exists for — so the
+   file is left where it is and taken in on the pass that clears the gate. Nothing is set aside.
+10. **Competing changes are named, never resolved.** Only one rewrite of a line can land and the
+    drift guard refuses the rest, which was already safe but silent. The owner is now told which
+    changes compete before deciding; the system still does not choose between reviewers.
+11. **Notion's button block is the trigger.** It cannot be created through the public API, but a
+    person can add one pointed at the requests database, which is what makes the whole cycle a
+    single click without the integration pretending to something the API does not offer.
 
 ## Accepted inputs
 
@@ -109,14 +135,19 @@ Where the brief or the API was silent, I made a call and recorded it.
 
 - **One workspace per deployment.** A single Notion integration token rather than per-workspace
   OAuth; multi-tenancy is not built.
-- **Email is not a channel yet.** Documents move through folders, which is real when synced but
-  not the same as a reviewer replying to a message. Both halves belong behind the existing seams.
+- **An outside reviewer still needs sending the file.** Inside the workspace the loop is
+  hands-free. For a reviewer with no Notion access the owner forwards the document from the row and
+  puts the reply back on it — one human hop, which email would close.
+- **Notion caps an attachment at 5 MiB on a free workspace.** Prose pages export far below it; a
+  very large document would need the folder channel.
+- **Two reviewers editing one paragraph in the same file** are merged by Word into a single
+  resulting text, attributed to the first author. Separate copies keep attribution exact.
 - **Table cells cannot be targeted individually.** SuperDocs re-chunks a whole table as one unit on
   upload, so an edit aimed at a single cell cannot be isolated back to that cell. It is surfaced
   rather than guessed at.
 - **A toggle's summary text is dropped by SuperDocs on upload**, so an edit to a toggle title
   cannot round-trip. Both of these are SuperDocs-side and reported as bugs.
-- **Decisions apply within one poll interval** (ten seconds by default), not instantly.
+- **Decisions apply within one poll interval** (fifteen seconds by default), not instantly.
 - **No notifications**: the page is commented and updated, but nobody is emailed.
 
 ## Running it
@@ -135,7 +166,8 @@ services.
 
 ## What I would build next
 
-- Email as a channel, both directions at once — delivery and intake behind the seams that exist.
+- Email as a channel, both directions at once — the third implementation of the seams that the
+  Notion-row and folder channels already share, and what closes the last hop to an outside reviewer.
 - Per-workspace OAuth and multi-tenancy.
 - A guided three-way merge: drift is detected and surfaced today; reconciling a reviewer's edit
   against newer Notion text is the next step.

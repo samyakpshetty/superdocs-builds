@@ -1,10 +1,12 @@
 """How the review document reaches the reviewers.
 
 The round-trip is only as usable as its first step: a document that never leaves the machine is
-not out for review. This is the seam that hands it over, and a folder is the implementation —
-which is a real channel, not a placeholder, when that folder is a shared Drive, Dropbox or
-SharePoint folder the reviewers already have. They collect the document there and drop the
-marked-up copy back into the intake folder, so the whole cycle runs without anyone in the middle.
+not out for review. This is the seam that hands it over, and it has two implementations.
+
+The default attaches the document to the **Notion row** that asked for the review, so asking and
+receiving happen in the same place and nobody leaves the application they work in. A **folder** is
+the other — a real channel, not a placeholder, when it is a shared Drive, Dropbox or SharePoint
+folder the reviewers already have.
 
 Delivery is a seam rather than a hard-coded transport because the round-trip does not care how the
 document travelled: it carries its own review-round id and is matched however it comes back. An

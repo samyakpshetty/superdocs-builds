@@ -16,26 +16,32 @@ reports `3 applied, 1 rejected, 2 skipped (page changed since review)`.*
 
 ## What it does
 
-1. **A review starts in Notion.** Someone adds a row to a *Review requests* database — the page,
-   who should review it — and sets Status to *Requested*. No terminal, no commands.
-2. **SuperDocs turns the page into a styled `.docx`** and it's delivered to the reviewers. The file
-   carries its own review-round id, so however it travels, it can find its way home.
+1. **A review starts with one button in Notion.** A *Send for review* button on the page adds a row
+   to a *Review requests* database. No terminal, no commands, no second app.
+2. **SuperDocs turns the page into a styled `.docx`**, and it appears attached to that same row,
+   moments later. The file carries its own review-round id, so however it travels it finds its way
+   home.
 3. **The reviewer works entirely in Word** — tracked changes and comments, the way they always
-   have — and sends it back. They never see Notion, never sign in anywhere.
+   have — and puts the marked-up copy back on the row. They never see Notion, never sign in
+   anywhere. Send it to several reviewers and every copy comes back to the same row.
 4. **SuperDocs proposes each change.** A tracked change goes out as a scoped edit; a free-form
    comment like *"make this less alarming"* is handed to SuperDocs' AI, which **writes the actual
    replacement text**. Each proposal comes back with the diff and an explanation.
 5. **The page owner approves, in Notion** — a queue on the page, or a comment on the changed line
-   itself. One decision per change.
+   itself. One decision per change, and if two reviewers rewrote the same line the queue says so
+   before anything is decided.
 6. **Approved changes land on the exact block**, block by block, with reviewer attribution and a
    provenance comment. Nothing else on the page is touched, and the page keeps a link to the round.
+
+From end to end, the owner never leaves Notion and the reviewer never leaves Word.
 
 ## How it works
 
 ```mermaid
 flowchart TB
     subgraph N["📄 Notion — the source of truth"]
-        REQ["Review requests<br/>Status: Requested"]
+        BTN["Send for review<br/>(a button on the page)"]
+        REQ["Review requests row<br/>Document ⇄ Returned"]
         PAGE["The page's blocks"]
         QUEUE["Review queue<br/>Status: Approved / Rejected"]
         MARK["A comment on each<br/>changed block"]
@@ -59,13 +65,15 @@ flowchart TB
 
     W["📝 Reviewer in Word<br/>tracked changes + comments"]
 
-    REQ -->|"1 · polled"| SEND
+    BTN -->|"1 · one click"| REQ
+    REQ -->|"polled"| SEND
     PAGE -->|"blocks, via Notion's API"| SEND
     SEND -->|"2 · whole document"| UP
     UP --> EXP
     EXP --> STAMP
-    STAMP -->|"3 · delivered"| W
-    W -->|"4 · returned, any channel"| MATCH
+    STAMP -->|"3 · attached to the row"| REQ
+    REQ -->|"the reviewer collects it"| W
+    W -->|"4 · marked-up copy, back on the row"| MATCH
     MATCH --> PARSE --> GATE
     GATE -->|"5 · scoped edits + comment intents"| CHAT
     CHAT -->|"proposals: diff, change id, AI note"| GATE
@@ -90,7 +98,7 @@ nothing — and why the same gate can be driven by a person or a program.
 | **Chat** *(review mode)* | proposes every reviewer change; **authors the edit** for a comment intent |
 | **Review / approve** | each human decision is relayed against the change it belongs to |
 | **Export** | produces the styled `.docx` the reviewer marks up |
-| **Multi-document** | several Notion pages can go out as one review packet, each change fanning back to its own page |
+| **Multi-document** | several Notion pages go out as one review packet, each change fanning back to its own page — verified live on two real pages, one export, one operation |
 
 Built on the REST API. The brief treats REST and MCP as interchangeable; REST was the shorter path
 to the four calls, and an MCP surface over the same controller would be a small addition.
@@ -137,9 +145,7 @@ NOTION_TOKEN=your-notion-token-here
 ```
 
 **4. Run it as a service — the way a team actually uses it.** Create the requests database once and
-put its id in `.env`, then start the service. From then on nobody touches a terminal: a row in
-Notion sends a page out, a returned file is matched and proposed, and the owner approves **in
-Notion** — in the review queue or by replying to the comment on the changed line.
+put its id in `.env`, then start the service. From then on nobody touches a terminal.
 
 ```bash
 docker compose run --rm --no-deps app python -m notion_review.cli \
@@ -148,23 +154,29 @@ docker compose run --rm --no-deps app python -m notion_review.cli \
 make watch     # add `--once` under cron for a scheduled job instead of a long-running process
 ```
 
-**How the document reaches the reviewer, and gets back.** The service writes each styled `.docx`
-into `outbox/`, and watches `inbox/` for it to return:
+**5. Add the button.** On any page you want reviewable, add a Notion **Button** block — *Add page
+to* → *Review requests*, with **Page URL** set to the page and **Status** to `Requested`. That is
+the whole trigger, and it is why nobody needs a command:
 
 ```
-Notion row → service → SuperDocs export → outbox/ ──► the reviewer opens it in Word
-                                                              │  tracked changes + comments
-   page updated ◄── owner approves in Notion ◄── inbox/ ◄──────┘
+[Send for review]  ← a button on the page
+      ↓
+  a row appears → the styled .docx is attached to it → the reviewer marks it up in Word
+      ↓                                                            │
+  the page updates ◄── the owner approves, in Notion ◄── dropped back on the row
 ```
 
-Put both folders inside a shared drive (Drive, Dropbox, SharePoint) that your reviewers can see,
-and that middle hop needs nobody: the reviewer opens the document straight from the folder, marks it
-up in Word, and saves it back into `inbox/`. They need no account, no login, and never see Notion.
+The document goes out on the row and the marked-up copies come back on the row, so the whole
+handoff stays inside Notion. A reviewer who has access to that database collects the file and drops
+their copy back themselves; an outside reviewer — legal, a client — is sent it by the owner from
+Notion, and their reply goes back on the row the same way. Several reviewers can each put their own
+copy on the same row, and each copy is taken in on its own.
 
-Without a shared folder it is two manual steps — you email the file from `outbox/` and save their
-reply into `inbox/`. Email is deliberately not built in yet: sending a reviewer a document while
-having no inbox to receive their reply would promise something the system cannot keep. Both halves
-belong behind the `Delivery` and `Intake` seams, together.
+Set `HANDOFF=folder` to use watched directories instead (`outbox/` out, `inbox/` back) — a real
+channel when they are inside a synced shared drive, and what a deployment without a requests
+database falls back to. Email would be a third channel behind the same two seams, and belongs there
+only as a pair: sending a reviewer a document while having no inbox to receive their reply would
+promise something the system cannot keep.
 
 **Or drive it by hand** — the same gate, approved in the terminal instead of in Notion. Useful for
 trying it once, for CI, or for debugging without setting up the requests database:
@@ -193,21 +205,32 @@ Where the brief or the API was silent, I made a call and recorded it here.
 - **A reviewer's question is never sent to the AI.** A comment ending in "?" goes to the page owner
   instead, so the AI can't fabricate an answer into the document. Deliberately conservative, with
   the human gate as the backstop.
-- **Decisions are polled, not pushed.** Notion's button blocks are unsupported by its public API, so
-  a database row is what an integration can actually offer. Polling suits a review measured in hours
-  or days and keeps this to one moving part.
+- **Decisions are polled, not pushed.** Notion's button blocks can't be *created* through the public
+  API, but a person can add one and point it at the requests database — so the trigger is a real
+  button and the integration reads the row it writes. Polling suits a review measured in hours or
+  days and keeps this to one moving part.
+- **A round takes in one file per reviewer, keyed by content.** Every reviewer marks up their own
+  copy, so identity belongs to the submission and not the round: the same file twice is free, a
+  different file is another reviewer. A copy that arrives while changes are still at the gate waits
+  its turn, because a SuperDocs session holds one pending proposal set at a time.
+- **Competing changes are named, not resolved.** Only one rewrite of a line can land; the rest are
+  refused by the drift guard rather than overwriting a colleague. The queue says which changes
+  compete before the owner decides, and never picks between them.
 - **Reviewer attribution is provenance, not authenticated identity** — Word author names are
   self-declared strings, and I report them faithfully without claiming more.
 - **I did not ship an email sender without an email intake.** Telling a reviewer to reply to a
-  mailbox nothing reads is a promise the system can't keep, so delivery is a folder — real when
-  synced to a shared drive — and both halves of email belong behind the existing seams together.
+  mailbox nothing reads is a promise the system can't keep. Both halves of email belong behind the
+  existing seams together, the way the Notion-row and folder channels already do.
 
 ## What it guarantees
 
 - **Surgical.** Only blocks a reviewer changed are written, and only the span that differs — the
   rest of a block's bold, links and colour survive untouched.
 - **Never a silent overwrite.** If the page changed while it was out for review, the change is
-  surfaced as a conflict instead of clobbering the newer edit.
+  surfaced as a conflict instead of clobbering the newer edit — including when the change that
+  moved it was another reviewer's, on the same line.
+- **No reviewer is dropped.** A round takes in a copy from every reviewer, each identified by its
+  contents, and merges them into one queue. The same file arriving twice costs nothing.
 - **Never bluffs.** A change is *applied* only after the block is re-read and confirmed.
 - **Idempotent where it costs money.** A crash and re-run re-spends no SuperDocs operation and
   double-applies nothing.
@@ -217,18 +240,24 @@ Where the brief or the API was silent, I made a call and recorded it here.
   at the gate; oversized edits are refused; content lands as text, never as markup.
 - **No secret in code, logs, or history.** Every log line is scrubbed of tokens before it's emitted.
 
-135 tests run without an API key, plus a Postgres-backed store test. I verified the one-command
+148 tests run without an API key, plus a Postgres-backed store test. I verified the one-command
 claim by cloning the repository fresh, with no `.env`.
 
 ## Limitations
 
 - **One workspace per deployment** — a single Notion integration token, not per-workspace OAuth.
-- **Email isn't a channel yet.** Documents move through folders, which is real when synced to a
-  shared drive, but not the same as a reviewer replying to a message.
+- **An outside reviewer still needs sending the file.** Inside the workspace the loop is
+  hands-free; for a reviewer with no Notion access the owner forwards the document from the row and
+  puts the reply back on it. Email would close that hop and is the next channel behind these seams.
+- **Notion caps an attachment at 5 MiB on a free workspace** (5 GiB on a paid one). A prose page
+  exports far below that, but a very large document would need the folder channel.
+- **Two reviewers editing the same paragraph in one file** are merged by Word into a single
+  resulting text, which I attribute to the first author. The text is right; the attribution is
+  lossy. Separate copies, one per reviewer, keep attribution exact.
 - **Table cells can't be targeted individually**, and a **toggle's title doesn't round-trip** —
   SuperDocs re-chunks a table as one unit and drops a toggle's summary text on upload. Both are
   surfaced rather than guessed at, and both are reported as bugs.
-- **Decisions apply within one poll interval** (ten seconds by default), not instantly.
+- **Decisions apply within one poll interval** (fifteen seconds by default), not instantly.
 - **No notifications** — the page is commented and updated, but nobody is emailed.
 
 Engineering notes, architecture decisions and the full assumption log are in
