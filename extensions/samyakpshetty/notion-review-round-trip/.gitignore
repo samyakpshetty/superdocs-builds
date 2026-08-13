@@ -16,11 +16,14 @@ dist/
 .coverage
 htmlcov/
 
-# Local review artifacts (exported docx, incoming markup, sqlite state)
+# Local review artifacts (exported docx, incoming markup, sqlite state).
+# inbox/ holds documents real reviewers sent back — never commit someone's content.
 *.db
 *.sqlite3
+*.docx
 artifacts/
 scratch/
+inbox/
 
 # OS / editor
 .DS_Store
