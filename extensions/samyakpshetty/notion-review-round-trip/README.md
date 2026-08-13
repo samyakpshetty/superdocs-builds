@@ -139,20 +139,22 @@ NOTION_TOKEN=your-notion-token-here
 **4. Send a page and apply the review**
 
 ```bash
-notion-review send --page-id <page-id>          # writes review-<round>.docx
-notion-review review --markup <returned.docx>   # approve each change in the terminal
-notion-review review-in-notion --markup <returned.docx>   # or approve inside Notion
+make send PAGE=<notion-page-id>      # writes review-<round>.docx, stamped with its round id
+make review FILE=<returned.docx>     # approve each change in the terminal
+make status                          # what every round is doing (ROUND=<id> for one in full)
 ```
 
 **5. Or let it run itself.** Create the requests database once, put its id in `.env`, and run the
 service — a team then starts reviews from Notion and never touches a terminal:
 
 ```bash
-notion-review init-requests --parent-page-id <a page shared with the integration>
-notion-review watch            # or `watch --once` from cron / a scheduled job
+docker compose run --rm --no-deps app python -m notion_review.cli \
+    init-requests --parent-page-id <a page shared with the integration>
+
+make watch     # the service; add `--once` under cron for a scheduled job instead
 ```
 
-`notion-review status` shows every round, what became of each change, and the ids to trace it
+`make status` shows every round, what became of each change, and the ids to trace it
 through both services. `make test-postgres` runs the store against a real Postgres.
 
 </details>

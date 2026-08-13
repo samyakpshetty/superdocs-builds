@@ -5,7 +5,7 @@
 COMPOSE := docker compose
 RUN := $(COMPOSE) run --rm --no-deps app
 
-.PHONY: help build lint fmt typecheck test check demo demo-live up down clean
+.PHONY: help build lint fmt typecheck test check demo send review watch status up down clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -35,8 +35,20 @@ check: build ## The full CI gate: lint + typecheck + tests
 demo: build ## Full round-trip on the fake providers — no keys, no ops, no Postgres
 	$(RUN) python -m notion_review.cli demo
 
-demo-live: build ## Real Notion + SuperDocs round-trip (needs SUPERDOCS_API_KEY + NOTION_TOKEN)
-	PROVIDER=live $(COMPOSE) run --rm app python -m notion_review.cli demo --live
+# --- Live targets. All need SUPERDOCS_API_KEY + NOTION_TOKEN in .env ---
+LIVE := PROVIDER=live $(COMPOSE) run --rm --no-deps app python -m notion_review.cli
+
+send: build ## Send a page for review: make send PAGE=<notion-page-id>
+	$(LIVE) send --page-id $(PAGE)
+
+review: build ## Apply a returned review: make review FILE=<marked-up.docx>
+	$(LIVE) review --markup $(FILE) --interactive
+
+watch: build ## Run the service: requests are sent, returned files applied, unattended
+	$(LIVE) watch --inbox inbox --outbox outbox
+
+status: build ## What every review round is doing (add ROUND=<id> for one in full)
+	$(LIVE) status $(if $(ROUND),--round-id $(ROUND),)
 
 up: ## Start db + app in the background
 	$(COMPOSE) up -d
