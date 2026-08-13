@@ -247,7 +247,9 @@ Where the brief or the API was silent, I made a call and recorded it here.
 - **Never bluffs.** A change is *applied* only after the block is re-read and confirmed.
 - **Idempotent where it costs money.** A crash and re-run re-spends no SuperDocs operation and
   double-applies nothing.
-- **Resumable.** The gate is a checkpointed interrupt, so a review can pause for days and resume.
+- **Resumable.** The gate is a checkpointed interrupt, so a review can pause for days and
+  resume — the round store and the graph checkpoint live in a mounted `data/` directory, so
+  they outlive the container that created them.
 - **Untrusted input is treated as such.** The `.docx` is read behind zip-bomb and XXE defenses;
   reviewer text is sanitised before it reaches the AI; links an edit would introduce are surfaced
   at the gate; oversized edits are refused; content lands as text, never as markup.

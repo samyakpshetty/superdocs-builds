@@ -12,6 +12,7 @@ same way once a ``DATABASE_URL`` is present, and left out here so the keyless pa
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -27,6 +28,7 @@ def open_checkpointer(sqlite_path: str | None) -> Any:
         return InMemorySaver()
     from langgraph.checkpoint.sqlite import SqliteSaver
 
+    Path(sqlite_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(sqlite_path, check_same_thread=False)
     saver = SqliteSaver(conn)
     saver.setup()

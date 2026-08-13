@@ -23,7 +23,14 @@ htmlcov/
 *.docx
 artifacts/
 scratch/
-inbox/
+# The working directories are tracked as empty so a fresh clone has them mounted and ready;
+# nothing that lands inside them is ever committed.
+inbox/*
+!inbox/.gitkeep
+outbox/*
+!outbox/.gitkeep
+data/*
+!data/.gitkeep
 
 # OS / editor
 .DS_Store

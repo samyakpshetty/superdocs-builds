@@ -163,3 +163,34 @@ def test_postgres_store_round_trips() -> None:
         assert store.get(rnd.id) is None
     finally:
         store.close()
+
+
+def test_a_store_creates_the_directory_it_was_pointed_at(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # The default state path lives under a mounted data/ directory so a round outlives its
+    # container. A missing directory must not surface as "unable to open database file".
+    target = tmp_path / "data" / "nested" / "state.db"
+    assert not target.parent.exists()
+
+    store = SQLiteStore(str(target))
+    round_ = ReviewRound(notion_page_id="page-1")
+    store.save(round_)
+
+    assert target.exists()
+    assert store.get(round_.id) is not None
+    store.close()
+
+
+def test_a_round_survives_the_process_that_created_it(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # `watch` runs in a throwaway container: the store has to be the thing that remembers, or a
+    # returned file comes back to a service that has never heard of its round.
+    path = str(tmp_path / "data" / "state.db")
+    first = SQLiteStore(path)
+    round_ = ReviewRound(notion_page_id="page-1")
+    first.save(round_)
+    first.close()
+
+    reopened = SQLiteStore(path)
+
+    assert [r for r in reopened.list_ids()] == [round_.id]
+    assert reopened.get(round_.id) is not None
+    reopened.close()

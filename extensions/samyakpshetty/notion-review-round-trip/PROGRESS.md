@@ -62,7 +62,9 @@ Two live runs are worth naming because they are the claims most easily asserted 
   interrupt at the gate, so a run survives a crash or a days-long pause and resumes where it
   stopped.
 - **Persistence**: each round is a row in a store behind a protocol — SQLite by default, Postgres
-  for scale — with an optimistic version, so concurrent work is rejected rather than lost.
+  for scale — with an optimistic version, so concurrent work is rejected rather than lost. The
+  store and the graph checkpoint live under a mounted `data/` directory: the service runs in a
+  throwaway container, and a review that survives a restart is the whole point of checkpointing.
 
 ## Decisions
 

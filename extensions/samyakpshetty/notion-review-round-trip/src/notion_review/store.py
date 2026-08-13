@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from notion_review.domain import ReviewRound
@@ -56,6 +57,10 @@ class SQLiteStore:
 
     def __init__(self, path: str = ":memory:") -> None:
         self._lock = threading.RLock()
+        if path != ":memory:":
+            # A store under a directory that does not exist yet is a confusing "unable to open
+            # database file"; create the directory instead of making the caller do it.
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         if path != ":memory:":

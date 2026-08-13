@@ -39,5 +39,12 @@ services:
     volumes:
       - ./src:/app/src
       - ./tests:/app/tests
+      # Everything a running review needs to outlive its container. `make watch` runs with
+      # --rm, so without these the round store and the graph checkpoint would be destroyed on
+      # exit — and a review that survives a crash or a days-long pause is the whole point of
+      # checkpointing it. The two folder-channel directories are here for the same reason.
+      - ./data:/app/data
+      - ./inbox:/app/inbox
+      - ./outbox:/app/outbox
     working_dir: /app
     command: ["python", "-c", "import notion_review; print('notion_review', notion_review.__version__)"]

@@ -40,7 +40,9 @@ from notion_review.sample import demo_page, demo_review_docx
 from notion_review.store import SQLiteStore
 from notion_review.superdocs import FakeSuperDocsClient
 
-_STATE_DEFAULT = ".notion-review-state.db"
+# Under ``data/`` because that directory is mounted from the host: a review round and its
+# graph checkpoint have to outlive the container that created them.
+_STATE_DEFAULT = "data/notion-review-state.db"
 
 
 @click.group()
