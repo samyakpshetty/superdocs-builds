@@ -22,7 +22,7 @@ from notion_review.docx_markup.security import DocxError
 from notion_review.docx_markup.stamp import identify_round, stamp_round_id
 from notion_review.domain import ReviewRound, RoundStatus
 from notion_review.logging import get_logger
-from notion_review.notion.base import NotionClient, NotionError
+from notion_review.notion.base import NotionClient, NotionError, NotionNotFoundError
 from notion_review.roundtrip.delivery import Deliverable, Delivery
 from notion_review.roundtrip.graph import InboundController, submission_key
 from notion_review.roundtrip.intake import Intake, ReturnedReview
@@ -130,6 +130,8 @@ class ReviewService:
         for database_id in self._boards.ids():
             try:
                 rows.extend(self._notion.query_database(database_id))
+            except NotionNotFoundError:
+                self._boards.forget(database_id)  # gone; stop rediscovering a stale entry
             except NotionError as exc:
                 # One board being unreadable must not stop the others.
                 _log.warning(

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from notion_review.logging import get_logger
-from notion_review.notion.base import NotionClient, NotionError
+from notion_review.notion.base import NotionClient, NotionError, NotionNotFoundError
 from notion_review.notion.models import QueueRow
 from notion_review.roundtrip.requests import (
     RETURNED_PROP,
@@ -98,6 +98,10 @@ class NotionRowIntake:
         for database_id in self._boards.ids():
             try:
                 rows.extend(self._notion.query_database(database_id))
+            except NotionNotFoundError:
+                # Archived, unshared or deleted. Notion's search will keep offering it until
+                # its index catches up, so say so once rather than warn on every pass.
+                self._boards.forget(database_id)
             except NotionError as exc:
                 # One unreadable board must not stop the others: a team that revoked access
                 # should not stall every other team's reviews.

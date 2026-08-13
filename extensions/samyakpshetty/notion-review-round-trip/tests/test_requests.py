@@ -337,3 +337,61 @@ def test_a_failed_search_keeps_serving_the_boards_already_known() -> None:
 
     # Reviews already under way must not stall because discovery had a bad minute.
     assert boards.ids() == [board]
+
+
+def test_a_board_that_vanished_is_dropped_and_then_retried_once_the_cooldown_passes() -> None:
+    # Archiving or unsharing a board makes it unreadable at once, but Notion's search keeps
+    # listing it as healthy until the index catches up. Without this the service would
+    # rediscover a board it cannot read on every single pass.
+    notion, page_id = FakeNotionClient.build_sample()
+    board = create_request_database(notion, parent_page_id=page_id)
+    now = [0.0]
+    boards = RequestBoards(notion, ttl_s=1.0, gone_cooldown_s=100.0, clock=lambda: now[0])
+    assert boards.ids() == [board]
+
+    boards.forget(board)  # what a 404 from query_database triggers
+
+    assert boards.ids() == []  # not served, even though search still lists it
+    now[0] += 50.0
+    assert boards.ids() == []  # still inside the cooldown
+
+    now[0] += 60.0
+    # A board archived by mistake and restored must come back, so this is a cooldown and not a
+    # tombstone: it is retried, and it is still there.
+    assert boards.ids() == [board]
+
+
+def test_an_archived_board_is_never_served_even_while_search_still_lists_it() -> None:
+    class Lagging(FakeNotionClient):
+        def search_databases(self, query: str):  # type: ignore[no-untyped-def]
+            return [
+                db.model_copy(update={"archived": True}) for db in super().search_databases(query)
+            ]
+
+    notion = Lagging()
+    page_id = notion.new_page("Home")
+    create_request_database(notion, parent_page_id=page_id)
+
+    assert len(notion.search_databases("Review requests")) == 1  # search still offers it
+    assert RequestBoards(notion).ids() == []  # discovery does not
+
+
+def test_the_service_forgets_a_board_that_404s_instead_of_warning_forever(tmp_path: Path) -> None:
+    notion, page_id = FakeNotionClient.build_sample()
+    board = create_request_database(notion, parent_page_id=page_id)
+    boards = RequestBoards(notion)
+    service = ReviewService(
+        intake=NotionRowIntake(notion, boards=boards),
+        notion=notion,
+        superdocs=FakeSuperDocsClient(),
+        store=SQLiteStore(),
+        config=Config.from_env({}),
+        delivery=NotionRowDelivery(notion),
+        boards=boards,
+    )
+    assert boards.ids() == [board]
+
+    notion.archive_database(board)  # somebody archives it mid-flight
+    service.tick()  # must not raise
+
+    assert boards.ids() == []

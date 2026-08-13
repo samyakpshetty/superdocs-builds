@@ -159,6 +159,15 @@ class FakeNotionClient:
         self._database_titles[database_id] = title
         return DatabaseRef(id=database_id, url=f"https://notion.so/{database_id}", title=title)
 
+    def archive_database(self, database_id: str) -> None:
+        """Stand in for somebody archiving a board in Notion (tests and the demo).
+
+        Notion's search keeps listing an archived database until its index catches up, so
+        this leaves the title in place and makes only the reads fail — which is what the
+        live service actually sees.
+        """
+        self._databases.pop(database_id, None)
+
     def search_databases(self, query: str) -> list[DatabaseRef]:
         """Match any word of the query, because Notion's search is looser than a substring.
 

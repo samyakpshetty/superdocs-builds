@@ -98,6 +98,7 @@ class DatabaseRef(BaseModel):
     id: str
     url: str = ""
     title: str = ""
+    archived: bool = False  # Notion's search still lists a database for a while after it goes
 
 
 class FileRef(BaseModel):

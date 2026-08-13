@@ -173,6 +173,7 @@ class LiveNotionClient:
                     id=str(item["id"]),
                     url=item.get("url", ""),
                     title="".join(part.get("plain_text", "") for part in (item.get("title") or [])),
+                    archived=bool(item.get("archived") or item.get("in_trash")),
                 )
                 for item in data.get("results", [])
             )

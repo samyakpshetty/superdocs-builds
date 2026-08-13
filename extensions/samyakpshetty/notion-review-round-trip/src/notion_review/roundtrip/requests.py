@@ -162,6 +162,7 @@ class RequestBoards:
         *,
         pinned: Sequence[str] = (),
         ttl_s: float = 60.0,
+        gone_cooldown_s: float = 600.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._notion = notion
@@ -169,9 +170,29 @@ class RequestBoards:
         # holding several boards where a deployment should serve exactly one.
         self._pinned = [board for board in pinned if board]
         self._ttl_s = ttl_s
+        self._gone_cooldown_s = gone_cooldown_s
         self._clock = clock
         self._cached: list[str] = []
         self._read_at: float | None = None
+        self._gone: dict[str, float] = {}
+
+    def forget(self, board_id: str) -> None:
+        """Stop serving a board that has vanished underneath us — for a while, not forever.
+
+        Archiving, unsharing or deleting a board makes it unreadable at once, but Notion's search
+        keeps listing it until the index catches up, and it is listed as perfectly healthy while
+        it does. Without this, every pass would rediscover a board it cannot read and warn about
+        it again, forever.
+
+        A cooldown rather than a tombstone, because the two things that look identical here are
+        not: a board whose index entry is merely stale, and a board somebody archived by mistake
+        and restored a minute later. Suppressing it permanently would serve the first case and
+        silently abandon the second, so it is retried once the cooldown passes — and if it really
+        is gone, it costs one failed read every cooldown instead of one every pass.
+        """
+        self._gone[board_id] = self._clock()
+        self._cached = [board for board in self._cached if board != board_id]
+        _log.info("board_forgotten", extra={"board": board_id})
 
     def ids(self) -> list[str]:
         if self._pinned:
@@ -187,8 +208,15 @@ class RequestBoards:
             _log.warning("board_discovery_failed", extra={"error": str(exc)})
             return list(self._cached)
         # Notion's search matches loosely, so it also returns our own per-round review queues.
-        # Only an exact title is a request board.
-        discovered = [db.id for db in found if db.title.strip() == REQUESTS_DB_TITLE]
+        # Only an exact title is a request board — and only one that still exists: the search
+        # index lags behind an archive, so a board that has just gone can still be listed.
+        discovered = [
+            db.id for db in found if db.title.strip() == REQUESTS_DB_TITLE and not db.archived
+        ]
+        self._gone = {
+            board: at for board, at in self._gone.items() if now - at < self._gone_cooldown_s
+        }
+        discovered = [board for board in discovered if board not in self._gone]
         if discovered != self._cached:
             _log.info(
                 "request_boards_discovered",
