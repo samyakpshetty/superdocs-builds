@@ -76,6 +76,62 @@ def test_review_drives_every_batch_before_reporting_the_round_finished(
     assert all("moved." in notion.block_text(b) for b in blocks)  # nothing left behind
 
 
+def test_status_reports_every_round_and_the_detail_of_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # When something goes wrong in production this is the first thing an operator runs, so it has
+    # to show outcomes, the reason a change did not land, and the ids needed to trace it.
+    notion, page_id = FakeNotionClient.build_sample()
+    superdocs = FakeSuperDocsClient()
+    monkeypatch.setattr("notion_review.cli.build_clients", lambda config: (notion, superdocs))
+    state = str(tmp_path / "state.db")
+    sent = CliRunner().invoke(
+        main, ["send", "--page-id", page_id, "--out", str(tmp_path / "o.docx"), "--state", state]
+    )
+    round_id = re.search(r"round=(\S+)", sent.output).group(1)  # type: ignore[union-attr]
+    markup = tmp_path / "m.docx"
+    markup.write_bytes(demo_review_docx())
+    CliRunner().invoke(
+        main, ["review", "--round-id", round_id, "--markup", str(markup), "--state", state]
+    )
+
+    overview = CliRunner().invoke(main, ["status", "--state", state, "--inbox", str(tmp_path)])
+    assert overview.exit_code == 0, overview.output
+    assert round_id in overview.output
+    assert "applied=" in overview.output and "SuperDocs op(s)" in overview.output
+
+    detail = CliRunner().invoke(
+        main, ["status", "--round-id", round_id, "--state", state, "--inbox", str(tmp_path)]
+    )
+    assert detail.exit_code == 0, detail.output
+    assert "Dana Reviewer" in detail.output  # who asked for it
+    assert "“3” → “4”" in detail.output  # what changed, as the minimal diff
+    assert "block=" in detail.output and "session" in detail.output  # ids to trace it
+
+
+def test_status_names_files_it_could_not_match(tmp_path: Path) -> None:
+    failed = tmp_path / "failed"
+    failed.mkdir()
+    (failed / "mystery.docx").write_bytes(b"x")
+    (failed / "mystery.docx.reason.txt").write_text("no review-round id in the document")
+
+    result = CliRunner().invoke(
+        main, ["status", "--state", str(tmp_path / "s.db"), "--inbox", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "mystery.docx" in result.output
+    assert "no review-round id" in result.output  # and why, so it can be acted on
+
+
+def test_status_on_an_unknown_round_says_so(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        main, ["status", "--round-id", "round_nope", "--state", str(tmp_path / "s.db")]
+    )
+    assert result.exit_code != 0
+    assert "no such round" in result.output
+
+
 def test_send_then_review_share_state_across_commands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

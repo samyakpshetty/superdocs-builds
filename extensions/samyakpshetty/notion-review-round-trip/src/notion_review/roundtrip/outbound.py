@@ -17,8 +17,9 @@ from notion_review.domain import BlockMapEntry, ReviewRound, RoundStatus
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient
 from notion_review.notion.html import blocks_to_html
-from notion_review.notion.models import plain_text
+from notion_review.notion.models import RichText
 from notion_review.notion.tree import fetch_block_tree
+from notion_review.roundtrip.notion_gate import ensure_queue
 from notion_review.store import Store
 from notion_review.superdocs.base import SuperDocsClient
 from notion_review.superdocs.models import ExportResult
@@ -138,15 +139,21 @@ def send_packet_for_review(
     docx = superdocs.export(session_id=round_.session_id, fmt="docx")
 
     round_.status = RoundStatus.SENT
+    # Create the round's record now, while the document is going out, so the page carries a link
+    # to the review round from the moment it leaves — not only once the markup comes back.
+    ensure_queue(round_, notion)
     store.save(round_)
 
     for page in pages:
         notion.create_comment(
             page_id=page.id,
-            rich_text=plain_text(
-                f"Sent for external review · round {round_.id}. "
-                "Approved changes will be applied to this page and recorded here."
-            ),
+            rich_text=[
+                RichText(text="Sent for external review · "),
+                RichText(text=f"round {round_.id}", href=round_.review_url or None),
+                RichText(
+                    text=". Approved changes will be applied to this page and recorded there."
+                ),
+            ],
         )
     _log.info(
         "review_round_sent",

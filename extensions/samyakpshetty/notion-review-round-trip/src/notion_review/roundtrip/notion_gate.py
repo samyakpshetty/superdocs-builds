@@ -59,18 +59,22 @@ def ensure_queue(round_: ReviewRound, notion: NotionClient) -> str:
     round_.queue_database_id = database.id
     round_.review_url = database.url
     _log.info("queue_created", extra={"round_id": round_.id, "database_id": database.id})
+    return database.id
+
+
+def notify_waiting(round_: ReviewRound, notion: NotionClient) -> None:
+    """Tell the page owner that changes are waiting, with a link straight to them."""
     try:
         notion.create_comment(
             page_id=round_.notion_page_id,
             rich_text=[
                 RichText(text=f"Review round {round_.id}: changes are waiting for you in "),
-                RichText(text=f"Review queue · round {round_.id}", href=database.url or None),
+                RichText(text=f"Review queue · round {round_.id}", href=round_.review_url or None),
                 RichText(text=" on this page. Set each row's Status to Approved or Rejected."),
             ],
         )
     except NotionError as exc:  # the queue still exists; the notice is a courtesy
         _log.warning("queue_notice_failed", extra={"round_id": round_.id, "error": str(exc)})
-    return database.id
 
 
 def publish_pending(round_: ReviewRound, notion: NotionClient, store: Store) -> int:
@@ -80,6 +84,7 @@ def publish_pending(round_: ReviewRound, notion: NotionClient, store: Store) -> 
     a proposal and the owner's decision, so losing them would strand the queue.
     """
     database_id = ensure_queue(round_, notion)
+    first_publish = not any(p.queue_row_id for p in round_.proposals)
     added = 0
     for proposal in round_.pending():
         if proposal.queue_row_id:
@@ -96,6 +101,8 @@ def publish_pending(round_: ReviewRound, notion: NotionClient, store: Store) -> 
         proposal.queue_row_url = row.url
         added += 1
     store.save(round_)
+    if added and first_publish:
+        notify_waiting(round_, notion)  # once, when the first changes arrive to be decided
     _log.info("queue_published", extra={"round_id": round_.id, "rows": added})
     return added
 

@@ -8,6 +8,7 @@ can watch the round-trip end to end without any setup. It is also what ``make de
 from __future__ import annotations
 
 import time
+from collections import Counter
 from pathlib import Path
 
 import click
@@ -18,6 +19,7 @@ from notion_review.docx_markup.stamp import identify_round, stamp_round_id
 from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange, ReviewRound
 from notion_review.logging import setup_logging
 from notion_review.notion.base import NotionClient
+from notion_review.notion.queue_schema import summarize
 from notion_review.roundtrip import (
     InboundController,
     ReviewGate,
@@ -245,6 +247,85 @@ def watch(inbox: str, state: str, interval: float, once: bool) -> None:
             click.echo(f"  {report.summary()}")
             return
         time.sleep(interval)
+
+
+@main.command()
+@click.option("--round-id", default="", help="Show every change in one round, in full.")
+@click.option("--state", default=_STATE_DEFAULT, type=click.Path(), help="Round store file.")
+@click.option("--inbox", default="inbox", type=click.Path(), help="Intake folder to report on.")
+def status(round_id: str, state: str, inbox: str) -> None:
+    """Show what every review round is doing — the first place to look when something is wrong.
+
+    Without --round-id: one line per round. With it: every change, its outcome, the error if it
+    failed, and the ids needed to trace it through SuperDocs, Notion, and the logs.
+    """
+    store = SQLiteStore(state)
+    if round_id:
+        round_ = store.get(round_id)
+        if round_ is None:
+            raise click.ClickException(f"no such round: {round_id}")
+        _print_round_detail(round_)
+        return
+
+    ids = store.list_ids()
+    if not ids:
+        click.echo("No review rounds yet.")
+    for rid in ids:
+        round_ = store.get(rid)
+        if round_ is None:
+            continue
+        counts = Counter(p.status.value for p in round_.proposals)
+        tally = " ".join(f"{name}={n}" for name, n in sorted(counts.items())) or "no changes"
+        colour = {"completed": "green", "failed": "red", "parked": "yellow"}.get(
+            round_.status.value, "cyan"
+        )
+        click.secho(f"{round_.id}  {round_.status.value:18s}", fg=colour, nl=False)
+        click.echo(f"{tally}  ·  {round_.cost_summary()}")
+
+    # The intake folder is the other place things go wrong: a file nobody could match.
+    failed = Path(inbox) / "failed"
+    if failed.is_dir():
+        rejects = sorted(p for p in failed.iterdir() if p.suffix == ".docx")
+        if rejects:
+            click.secho(f"\n{len(rejects)} file(s) set aside in {failed}:", fg="yellow")
+            for path in rejects:
+                reason = path.with_suffix(path.suffix + ".reason.txt")
+                why = reason.read_text().strip() if reason.exists() else "(no reason recorded)"
+                click.echo(f"  {path.name}: {why}")
+
+
+def _print_round_detail(round_: ReviewRound) -> None:
+    click.secho(f"{round_.id}  {round_.status.value}", fg="cyan", bold=True)
+    click.echo(f"  page       {round_.notion_page_id}")
+    click.echo(f"  session    {round_.session_id}  (SuperDocs)")
+    click.echo(f"  queue      {round_.review_url or '(not created yet)'}")
+    click.echo(f"  blocks     {len(round_.block_map)} mapped")
+    click.echo(f"  cost       {round_.cost_summary()}")
+    click.echo(f"  updated    {round_.updated_at.isoformat()}  (v{round_.version})")
+    click.echo(f"\n  {len(round_.proposals)} change(s):")
+    for proposal in round_.proposals:
+        colour = {
+            ProposalStatus.APPLIED: "green",
+            ProposalStatus.REJECTED: "white",
+            ProposalStatus.CONFLICT: "yellow",
+            ProposalStatus.FAILED: "red",
+        }.get(proposal.status, "cyan")
+        click.secho(f"    {proposal.status.value:9s}", fg=colour, nl=False)
+        # Show what differs, not two truncated copies of the same sentence.
+        detail = (
+            summarize(_text(proposal.old_html), _text(proposal.new_html))
+            if proposal.new_html
+            else proposal.reviewer_comment
+        )
+        click.echo(f"{proposal.source.value:15s} {proposal.reviewer_name:18s} {detail}")
+        if proposal.error:
+            click.secho(f"              error: {proposal.error}", fg="red")
+        click.echo(
+            f"              block={proposal.notion_block_id} chunk={proposal.chunk_id or '-'} "
+            f"change={proposal.change_id or '-'} job={proposal.job_id or '-'}"
+        )
+        if proposal.links:
+            click.secho(f"              links: {', '.join(proposal.links)}", fg="yellow")
 
 
 @main.command()
