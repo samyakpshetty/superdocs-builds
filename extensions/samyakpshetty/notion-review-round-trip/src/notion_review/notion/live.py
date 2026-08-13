@@ -156,6 +156,30 @@ class LiveNotionClient:
         data = self._request("POST", "/v1/databases", json=payload).json()
         return DatabaseRef(id=str(data["id"]), url=data.get("url", ""))
 
+    def search_databases(self, query: str) -> list[DatabaseRef]:
+        found: list[DatabaseRef] = []
+        cursor: str | None = None
+        while True:
+            body: dict[str, Any] = {
+                "query": query,
+                "filter": {"property": "object", "value": "database"},
+                "page_size": 100,
+            }
+            if cursor:
+                body["start_cursor"] = cursor
+            data = self._request("POST", "/v1/search", json=body).json()
+            found.extend(
+                DatabaseRef(
+                    id=str(item["id"]),
+                    url=item.get("url", ""),
+                    title="".join(part.get("plain_text", "") for part in (item.get("title") or [])),
+                )
+                for item in data.get("results", [])
+            )
+            if not data.get("has_more"):
+                return found
+            cursor = data.get("next_cursor")
+
     def create_row(self, *, database_id: str, properties: dict[str, Any]) -> QueueRow:
         payload = {"parent": {"database_id": database_id}, "properties": properties}
         data = self._request("POST", "/v1/pages", json=payload).json()

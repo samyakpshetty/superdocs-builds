@@ -12,6 +12,7 @@ from notion_review.notion.base import NotionClient
 from notion_review.notion.fake import FakeNotionClient
 from notion_review.roundtrip.delivery import Delivery, FolderDelivery, NotionRowDelivery
 from notion_review.roundtrip.intake import FolderIntake, Intake, NotionRowIntake
+from notion_review.roundtrip.requests import RequestBoards
 from notion_review.superdocs.base import SuperDocsClient
 from notion_review.superdocs.fake import FakeSuperDocsClient
 
@@ -35,27 +36,35 @@ def build_clients(config: Config) -> tuple[NotionClient, SuperDocsClient]:
     return FakeNotionClient(), FakeSuperDocsClient()
 
 
+def build_boards(config: Config, notion: NotionClient) -> RequestBoards:
+    """The *Review requests* boards this deployment serves.
+
+    Found, not configured: a board is served because someone shared it with the integration in
+    Notion, which is the same gesture that grants access to it. Adding a team is adding a board;
+    nothing is redeployed and no id is copied anywhere. ``NOTION_REQUESTS_DB`` remains as a pin
+    for a deployment that should serve exactly one board in a workspace holding several.
+    """
+    pinned = [config.notion_requests_database_id] if config.notion_requests_database_id else []
+    return RequestBoards(notion, pinned=pinned)
+
+
 def build_channel(
-    config: Config, notion: NotionClient, *, inbox: str, outbox: str
+    config: Config, notion: NotionClient, *, inbox: str, outbox: str, boards: RequestBoards
 ) -> tuple[Intake, Delivery]:
     """How the document reaches reviewers and comes back — both halves, chosen together.
 
     They are returned as a pair on purpose: a channel that can send but not receive is a promise
     the round-trip cannot keep, so the two are never configured apart.
 
-    With a requests database, the default keeps the whole handoff **inside Notion** — the document
-    is attached to the row that asked for it, and reviewers drop their marked-up copies back onto
-    the same row, so nobody touches a folder or a terminal. ``HANDOFF=folder`` uses a watched
-    directory instead, which is a real channel when it is a synced shared drive and is also what
-    a deployment without a requests database falls back to.
+    With at least one requests board in reach, the default keeps the whole handoff **inside
+    Notion** — the document is attached to the row that asked for it, and reviewers drop their
+    marked-up copies back onto the same row, so nobody touches a folder or a terminal.
+    ``HANDOFF=folder`` uses a watched directory instead, which is a real channel when it is a
+    synced shared drive and is also what a deployment with no board in reach falls back to.
 
     Either way the round-trip is unchanged: the document carries its own review-round id and is
     matched however it comes home.
     """
-    if config.handoff == "notion" and config.notion_requests_database_id:
-        database_id = config.notion_requests_database_id
-        return (
-            NotionRowIntake(notion, database_id=database_id),
-            NotionRowDelivery(notion),
-        )
+    if config.handoff == "notion" and boards.ids():
+        return NotionRowIntake(notion, boards=boards), NotionRowDelivery(notion)
     return FolderIntake(inbox), FolderDelivery(outbox)

@@ -20,11 +20,13 @@ the marked-up copies come back onto it, and the changes appear on the page for a
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from notion_review.logging import get_logger
-from notion_review.notion.base import NotionClient
+from notion_review.notion.base import NotionClient, NotionError
 from notion_review.notion.models import FileRef, QueueRow
 
 _log = get_logger("notion_review.requests")
@@ -33,6 +35,7 @@ STATUS_REQUESTED = "Requested"
 STATUS_SENT = "Sent"
 STATUS_FAILED = "Failed"
 
+REQUESTS_DB_TITLE = "Review requests"  # the exact title that marks a board as ours
 DOCUMENT_PROP = "Document"  # the styled .docx we send out, attached to the row
 RETURNED_PROP = "Returned"  # where reviewers put their marked-up copies back
 TAKEN_IN_PROP = "Taken in"  # returned files already handed to the round-trip
@@ -124,14 +127,76 @@ def taken_in_properties(names: set[str]) -> dict[str, Any]:
 
 
 def create_request_database(notion: NotionClient, *, parent_page_id: str) -> str:
-    """Create the requests database in the workspace; returns its id (put it in config)."""
+    """Create a requests database in the workspace; returns its id.
+
+    Nothing needs to be told about it afterwards — :class:`RequestBoards` finds it because it is
+    shared with the integration.
+    """
     database = notion.create_database(
         parent_page_id=parent_page_id,
-        title="Review requests",
+        title=REQUESTS_DB_TITLE,
         properties=request_properties(),
     )
     _log.info("requests_database_created", extra={"database_id": database.id})
     return database.id
+
+
+class RequestBoards:
+    """Every *Review requests* database this integration can see.
+
+    Which boards exist is a fact about the workspace, not about the deployment, so it is
+    discovered rather than configured. Notion's search returns only what someone has explicitly
+    shared with the connection, so a team starts using this by sharing their board in Notion —
+    the same gesture that grants access — and stops by unsharing it. Nothing is redeployed, no
+    id is copied into an environment file, and a workspace with five teams and five boards needs
+    no more setup than a workspace with one.
+
+    The result is cached briefly, because this is polled on a loop and the answer changes about
+    as often as somebody creates a database. A board shared while the service is running is
+    picked up within one refresh.
+    """
+
+    def __init__(
+        self,
+        notion: NotionClient,
+        *,
+        pinned: Sequence[str] = (),
+        ttl_s: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._notion = notion
+        # An explicit id pins the service to one board and skips discovery — for a workspace
+        # holding several boards where a deployment should serve exactly one.
+        self._pinned = [board for board in pinned if board]
+        self._ttl_s = ttl_s
+        self._clock = clock
+        self._cached: list[str] = []
+        self._read_at: float | None = None
+
+    def ids(self) -> list[str]:
+        if self._pinned:
+            return list(self._pinned)
+        now = self._clock()
+        if self._read_at is not None and now - self._read_at < self._ttl_s:
+            return list(self._cached)
+        try:
+            found = self._notion.search_databases(REQUESTS_DB_TITLE)
+        except NotionError as exc:
+            # Keep serving the boards we already know: a search that fails is no reason to stop
+            # taking in reviews that are already under way.
+            _log.warning("board_discovery_failed", extra={"error": str(exc)})
+            return list(self._cached)
+        # Notion's search matches loosely, so it also returns our own per-round review queues.
+        # Only an exact title is a request board.
+        discovered = [db.id for db in found if db.title.strip() == REQUESTS_DB_TITLE]
+        if discovered != self._cached:
+            _log.info(
+                "request_boards_discovered",
+                extra={"boards": len(discovered), "was": len(self._cached)},
+            )
+        self._cached = discovered
+        self._read_at = now
+        return list(discovered)
 
 
 def _text_of(row: dict[str, Any], name: str) -> str:

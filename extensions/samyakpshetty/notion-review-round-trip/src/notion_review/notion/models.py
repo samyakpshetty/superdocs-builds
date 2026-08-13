@@ -93,10 +93,11 @@ class ChildrenPage(BaseModel):
 
 
 class DatabaseRef(BaseModel):
-    """A database Notion created for us — its id, and the URL the page can link to."""
+    """A database — its id, the URL a page can link to, and its title as Notion reports it."""
 
     id: str
     url: str = ""
+    title: str = ""
 
 
 class FileRef(BaseModel):

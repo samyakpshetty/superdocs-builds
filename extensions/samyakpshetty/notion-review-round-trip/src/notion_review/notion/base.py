@@ -68,6 +68,15 @@ class NotionClient(Protocol):
         """Create the review-queue database under the page; returns its id and URL."""
         ...
 
+    def search_databases(self, query: str) -> list[DatabaseRef]:
+        """Every database shared with this integration whose title matches ``query``.
+
+        Notion's search only ever returns what a person has explicitly shared with the connection,
+        which is what lets the integration *find* its request boards instead of being told their
+        ids. The match is fuzzy, so callers filter by exact title themselves.
+        """
+        ...
+
     def create_row(self, *, database_id: str, properties: dict[str, Any]) -> QueueRow:
         """Add one proposed change to the queue as a row the owner can decide on."""
         ...

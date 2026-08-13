@@ -157,7 +157,22 @@ class FakeNotionClient:
         database_id = self._next("db")
         self._databases[database_id] = []
         self._database_titles[database_id] = title
-        return DatabaseRef(id=database_id, url=f"https://notion.so/{database_id}")
+        return DatabaseRef(id=database_id, url=f"https://notion.so/{database_id}", title=title)
+
+    def search_databases(self, query: str) -> list[DatabaseRef]:
+        """Match any word of the query, because Notion's search is looser than a substring.
+
+        Checked against the live API: searching for "Review requests" also returns every
+        "Review queue · round …" database, on the strength of the shared word "Review". A fake
+        that matched on substring would be *stricter* than the real thing and would quietly hide
+        the reason callers have to filter by exact title.
+        """
+        words = {word for word in query.strip().lower().split() if word}
+        return [
+            DatabaseRef(id=db_id, url=f"https://notion.so/{db_id}", title=title)
+            for db_id, title in self._database_titles.items()
+            if words & set(title.lower().split())
+        ]
 
     def create_row(self, *, database_id: str, properties: dict[str, object]) -> QueueRow:
         if database_id not in self._databases:

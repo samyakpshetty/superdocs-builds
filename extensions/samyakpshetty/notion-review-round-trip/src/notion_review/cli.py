@@ -13,7 +13,7 @@ from pathlib import Path
 
 import click
 
-from notion_review.clients import build_channel, build_clients
+from notion_review.clients import build_boards, build_channel, build_clients
 from notion_review.config import Config
 from notion_review.docx_markup.stamp import identify_round, stamp_round_id
 from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange, ReviewRound
@@ -255,7 +255,8 @@ def watch(inbox: str, outbox: str, state: str, interval: float, once: bool) -> N
     setup_logging(config.log_format)
     notion, superdocs = build_clients(config)
     store = SQLiteStore(state)
-    intake, delivery = build_channel(config, notion, inbox=inbox, outbox=outbox)
+    boards = build_boards(config, notion)
+    intake, delivery = build_channel(config, notion, inbox=inbox, outbox=outbox, boards=boards)
     service = ReviewService(
         intake=intake,
         notion=notion,
@@ -264,15 +265,22 @@ def watch(inbox: str, outbox: str, state: str, interval: float, once: bool) -> N
         config=config,
         checkpointer=open_checkpointer(f"{state}.ckpt"),
         delivery=delivery,
-        requests_database_id=config.notion_requests_database_id,
+        boards=boards,
     )
     if isinstance(intake, NotionRowIntake):
-        click.secho("Watching the Review requests database…", fg="cyan", bold=True)
+        found = boards.ids()
+        click.secho(
+            f"Watching {len(found)} Review requests board(s) shared with this integration…",
+            fg="cyan",
+            bold=True,
+        )
         click.echo("  A row sends its page out and the document lands on that row.")
         click.echo("  Reviewers drop the marked-up copy back on the row; nobody leaves Notion.")
+        click.echo("  Share another board with the integration and it is picked up — no restart.")
     else:
         click.secho(f"Watching {inbox}/ for returned reviews…", fg="cyan", bold=True)
-        click.echo("  Drop a marked-up .docx in; it is matched, proposed, and queued in Notion.")
+        click.echo("  No Review requests board is shared with this integration yet.")
+        click.echo("  Create one with `init-requests`, or share an existing one, to use Notion.")
     while True:
         report = service.tick()
         for round_id in report.sent:

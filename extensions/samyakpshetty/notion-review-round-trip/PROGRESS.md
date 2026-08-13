@@ -13,7 +13,7 @@ preserving structure and reviewer attribution throughout.
 ## Status
 
 Complete, and proven end to end on both the deterministic providers and the live services.
-**148 tests that need no API key**, plus a Postgres-backed store test; `ruff`, `mypy --strict` and
+**155 tests that need no API key**, plus a Postgres-backed store test; `ruff`, `mypy --strict` and
 `pytest` all green. I verified the one-command claim by cloning the repository fresh, with no
 `.env`: `make check` and `make demo` both run unchanged.
 
@@ -47,6 +47,10 @@ Two live runs are worth naming because they are the claims most easily asserted 
   explanation. All four contract calls are exercised: upload, chat, approve, export.
 - **One headless gate, three drivers**: a review queue *in Notion*, a comment on the changed line
   itself, and a terminal gate for CI or an agent. Decisions from any of them are merged.
+- **Boards are discovered, not configured.** Every *Review requests* database shared with the
+  integration is served. Notion's search returns only what someone shared with the connection,
+  so sharing a board switches a team on and unsharing switches it off; no id is ever configured,
+  and a board shared while the service runs is picked up within a minute.
 - **The whole cycle runs unattended, and stays inside Notion.** A button writes a request row; the
   styled document is attached to that row; reviewers put their marked-up copies back on it; each is
   matched by the id it carries, proposed, and queued; the owner's decisions are read back and
@@ -122,6 +126,12 @@ Where the brief or the API was silent, I made a call and recorded it.
 11. **Notion's button block is the trigger.** It cannot be created through the public API, but a
     person can add one pointed at the requests database, which is what makes the whole cycle a
     single click without the integration pretending to something the API does not offer.
+12. **Which boards to serve is a fact about the workspace, not the deployment.** Configuring a
+    database id would mean editing an environment file and restarting a service every time a
+    team started using this — which is not a shape that survives production. Notion's search
+    returns exactly what has been shared with the connection, so discovery is both the right
+    answer and the one the API was already offering. The search matches loosely and also
+    returns our own per-round review queues, so only an exact title counts as a board.
 
 ## Accepted inputs
 

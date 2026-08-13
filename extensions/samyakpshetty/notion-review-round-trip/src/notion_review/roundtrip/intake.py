@@ -23,8 +23,10 @@ from typing import Protocol, runtime_checkable
 
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
+from notion_review.notion.models import QueueRow
 from notion_review.roundtrip.requests import (
     RETURNED_PROP,
+    RequestBoards,
     files_in,
     taken_in,
     taken_in_properties,
@@ -79,11 +81,11 @@ class NotionRowIntake:
         self,
         notion: NotionClient,
         *,
-        database_id: str,
+        boards: RequestBoards,
         property_name: str = RETURNED_PROP,
     ) -> None:
         self._notion = notion
-        self._database_id = database_id
+        self._boards = boards
         self._property = property_name
         self._rows: dict[str, str] = {}  # filename -> the row it came from, for accept/reject
         # What each row had already taken in when it was last read. Held from the poll so that
@@ -92,11 +94,16 @@ class NotionRowIntake:
         self._taken: dict[str, set[str]] = {}
 
     def poll(self) -> list[ReturnedReview]:
-        try:
-            rows = self._notion.query_database(self._database_id)
-        except NotionError as exc:
-            _log.warning("returned_rows_unreadable", extra={"error": str(exc)})
-            return []
+        rows: list[QueueRow] = []
+        for database_id in self._boards.ids():
+            try:
+                rows.extend(self._notion.query_database(database_id))
+            except NotionError as exc:
+                # One unreadable board must not stop the others: a team that revoked access
+                # should not stall every other team's reviews.
+                _log.warning(
+                    "returned_rows_unreadable", extra={"board": database_id, "error": str(exc)}
+                )
         items: list[ReturnedReview] = []
         for row in rows:
             already = taken_in(row.properties)

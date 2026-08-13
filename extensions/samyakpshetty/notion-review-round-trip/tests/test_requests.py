@@ -9,6 +9,7 @@ from notion_review.config import Config
 from notion_review.docx_markup.stamp import identify_round, stamp_round_id
 from notion_review.domain import RoundStatus
 from notion_review.notion import FakeNotionClient
+from notion_review.notion.base import NotionError
 from notion_review.notion.queue_schema import STATUS_APPROVED
 from notion_review.roundtrip.delivery import Deliverable, FolderDelivery, NotionRowDelivery
 from notion_review.roundtrip.intake import FolderIntake, NotionRowIntake
@@ -18,6 +19,7 @@ from notion_review.roundtrip.requests import (
     STATUS_FAILED,
     STATUS_REQUESTED,
     STATUS_SENT,
+    RequestBoards,
     create_request_database,
     files_in,
     request_properties,
@@ -48,7 +50,7 @@ def _setup(tmp_path: Path) -> tuple[ReviewService, FakeNotionClient, SQLiteStore
         store=store,
         config=Config.from_env({}),
         delivery=FolderDelivery(outbox),
-        requests_database_id=requests_db,
+        boards=RequestBoards(notion),
     )
     return service, notion, store, requests_db, page_id, outbox
 
@@ -173,14 +175,15 @@ def _notion_row_service(
     superdocs = FakeSuperDocsClient()
     store = SQLiteStore()
     requests_db = create_request_database(notion, parent_page_id=page_id)
+    boards = RequestBoards(notion)
     service = ReviewService(
-        intake=NotionRowIntake(notion, database_id=requests_db),
+        intake=NotionRowIntake(notion, boards=boards),
         notion=notion,
         superdocs=superdocs,
         store=store,
         config=Config.from_env({}),
         delivery=NotionRowDelivery(notion),
-        requests_database_id=requests_db,
+        boards=boards,
     )
     return service, notion, store, requests_db, page_id
 
@@ -261,3 +264,76 @@ def test_a_returned_file_that_names_no_round_is_reported_on_its_own_row(tmp_path
     # The file is left where the reviewer put it, and the row says what went wrong.
     assert len(files_in(notion.row_properties(row.page_id), RETURNED_PROP)) == 1
     assert "round id" in notion.row_text(row.page_id, "Result")
+
+
+def test_boards_are_discovered_from_what_is_shared_not_from_configuration() -> None:
+    # Adding a team is sharing a board in Notion. Nothing is redeployed and no id is configured.
+    notion, page_id = FakeNotionClient.build_sample()
+    boards = RequestBoards(notion)
+    assert boards.ids() == []
+
+    first = create_request_database(notion, parent_page_id=page_id)
+    boards = RequestBoards(notion)  # a fresh read, as a restart would do
+    assert boards.ids() == [first]
+
+    second = create_request_database(notion, parent_page_id=page_id)
+    assert set(RequestBoards(notion).ids()) == {first, second}
+
+
+def test_our_own_review_queues_are_never_mistaken_for_a_request_board() -> None:
+    # Notion's search matches titles loosely, so searching for "Review requests" also returns
+    # every "Review queue · round …" database this integration created. Only an exact title is
+    # a board; polling a queue for requests would be nonsense.
+    notion, page_id = FakeNotionClient.build_sample()
+    board = create_request_database(notion, parent_page_id=page_id)
+    notion.create_database(
+        parent_page_id=page_id, title="Review queue · round round_abc123", properties={}
+    )
+
+    assert len(notion.search_databases("Review requests")) == 2  # the search is fuzzy
+    assert RequestBoards(notion).ids() == [board]  # discovery is not
+
+
+def test_a_board_shared_while_running_is_picked_up_without_a_restart() -> None:
+    notion, page_id = FakeNotionClient.build_sample()
+    now = [1000.0]
+    boards = RequestBoards(notion, ttl_s=60.0, clock=lambda: now[0])
+    assert boards.ids() == []
+
+    added = create_request_database(notion, parent_page_id=page_id)
+
+    assert boards.ids() == []  # still inside the cache window
+    now[0] += 61.0
+    assert boards.ids() == [added]  # picked up on the next refresh, no restart
+
+
+def test_a_pinned_board_skips_discovery_entirely() -> None:
+    notion, page_id = FakeNotionClient.build_sample()
+    create_request_database(notion, parent_page_id=page_id)
+
+    pinned = RequestBoards(notion, pinned=["db_pinned"])
+
+    assert pinned.ids() == ["db_pinned"]  # a deployment can still serve exactly one board
+
+
+def test_a_failed_search_keeps_serving_the_boards_already_known() -> None:
+    class Flaky(FakeNotionClient):
+        broken = False
+
+        def search_databases(self, query: str):  # type: ignore[no-untyped-def]
+            if self.broken:
+                raise NotionError("search unavailable")
+            return super().search_databases(query)
+
+    notion = Flaky()
+    page_id = notion.new_page("Home")
+    board = create_request_database(notion, parent_page_id=page_id)
+    now = [0.0]
+    boards = RequestBoards(notion, ttl_s=1.0, clock=lambda: now[0])
+    assert boards.ids() == [board]
+
+    notion.broken = True
+    now[0] += 5.0
+
+    # Reviews already under way must not stall because discovery had a bad minute.
+    assert boards.ids() == [board]

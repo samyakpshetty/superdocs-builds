@@ -144,8 +144,8 @@ SUPERDOCS_API_KEY=your-superdocs-key-here
 NOTION_TOKEN=your-notion-token-here
 ```
 
-**4. Run it as a service — the way a team actually uses it.** Create the requests database once and
-put its id in `.env`, then start the service. From then on nobody touches a terminal.
+**4. Run it as a service — the way a team actually uses it.** Create a requests board once, then
+start the service. Nothing is configured afterwards and nobody touches a terminal again.
 
 ```bash
 docker compose run --rm --no-deps app python -m notion_review.cli \
@@ -153,6 +153,14 @@ docker compose run --rm --no-deps app python -m notion_review.cli \
 
 make watch     # add `--once` under cron for a scheduled job instead of a long-running process
 ```
+
+**Boards are found, not configured.** The service serves every *Review requests* database that has
+been shared with the integration — Notion's search only ever returns what someone explicitly shared
+with the connection, so **sharing a board is how a team switches this on, and unsharing it is how
+they switch it off**. Five teams with five boards need no more setup than one, a board shared while
+the service is running is picked up within a minute without a restart, and no database id is ever
+copied into an environment file. Set `NOTION_REQUESTS_DB` only to pin one deployment to exactly one
+board in a workspace holding several.
 
 **5. Add the button.** On any page you want reviewable, add a Notion **Button** block — *Add page
 to* → *Review requests*, with **Page URL** set to the page and **Status** to `Requested`. That is
@@ -209,6 +217,11 @@ Where the brief or the API was silent, I made a call and recorded it here.
   API, but a person can add one and point it at the requests database — so the trigger is a real
   button and the integration reads the row it writes. Polling suits a review measured in hours or
   days and keeps this to one moving part.
+- **Which boards to serve is discovered, not configured.** Which databases exist is a fact about the
+  workspace, not about the deployment, and Notion already has the right primitive: search returns
+  exactly what has been shared with the connection. So a team enables this with the same gesture
+  that grants access, and an environment file never learns a database id. A configured id survives
+  only as a pin for a deployment that should serve one board out of several.
 - **A round takes in one file per reviewer, keyed by content.** Every reviewer marks up their own
   copy, so identity belongs to the submission and not the round: the same file twice is free, a
   different file is another reviewer. A copy that arrives while changes are still at the gate waits
@@ -240,12 +253,13 @@ Where the brief or the API was silent, I made a call and recorded it here.
   at the gate; oversized edits are refused; content lands as text, never as markup.
 - **No secret in code, logs, or history.** Every log line is scrubbed of tokens before it's emitted.
 
-148 tests run without an API key, plus a Postgres-backed store test. I verified the one-command
+155 tests run without an API key, plus a Postgres-backed store test. I verified the one-command
 claim by cloning the repository fresh, with no `.env`.
 
 ## Limitations
 
 - **One workspace per deployment** — a single Notion integration token, not per-workspace OAuth.
+  Within that workspace any number of teams and boards are served without configuration.
 - **An outside reviewer still needs sending the file.** Inside the workspace the loop is
   hands-free; for a reviewer with no Notion access the owner forwards the document from the row and
   puts the reply back on it. Email would close that hop and is the next channel behind these seams.

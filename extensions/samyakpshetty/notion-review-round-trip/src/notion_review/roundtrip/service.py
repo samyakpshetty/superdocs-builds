@@ -38,6 +38,7 @@ from notion_review.roundtrip.requests import (
     STATUS_FAILED,
     STATUS_REQUESTED,
     STATUS_SENT,
+    RequestBoards,
     ReviewRequest,
     mark_request,
     parse_request,
@@ -81,11 +82,11 @@ class ReviewService:
         config: Config,
         checkpointer: Any | None = None,
         delivery: Delivery | None = None,
-        requests_database_id: str = "",
+        boards: RequestBoards | None = None,
     ) -> None:
         self._intake = intake
         self._delivery = delivery
-        self._requests_database_id = requests_database_id
+        self._boards = boards
         self._notion = notion
         self._superdocs = superdocs
         self._store = store
@@ -123,13 +124,17 @@ class ReviewService:
 
     def _take_requests(self, report: TickReport) -> None:
         """Send out any page someone asked for in Notion, and tell the row what happened."""
-        if not (self._requests_database_id and self._delivery):
+        if not (self._boards and self._delivery):
             return  # the Notion trigger is optional; without it, `send` is the entry point
-        try:
-            rows = self._notion.query_database(self._requests_database_id)
-        except NotionError as exc:
-            _log.warning("requests_read_failed", extra={"error": str(exc)})
-            return
+        rows = []
+        for database_id in self._boards.ids():
+            try:
+                rows.extend(self._notion.query_database(database_id))
+            except NotionError as exc:
+                # One board being unreadable must not stop the others.
+                _log.warning(
+                    "requests_read_failed", extra={"board": database_id, "error": str(exc)}
+                )
         for row in rows:
             if row.status != STATUS_REQUESTED:
                 continue
