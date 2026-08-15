@@ -14,6 +14,7 @@ from inspection_report import sample
 from inspection_report.domain import catalogue
 from inspection_report.render import pipeline, report
 from inspection_report.superdocs.fake import FakeSuperDocsClient
+from inspection_report.templates import binding
 from inspection_report.verify import exports as verify_exports
 
 TEMPLATE = "templates/buyer_summary.html"
@@ -69,6 +70,59 @@ class TestTheCardsBar:
             else verify_exports.images_in_pdf(data)
         )
         assert count == expected
+
+
+class TestEveryShippedFormat:
+    """Each format is exercised, not just the one the demo happens to default to.
+
+    They differ on purpose: the repair-priority sheet declares no photo region, so what the
+    verifier holds it to is read from the template rather than assumed.
+    """
+
+    @pytest.mark.parametrize("name", ["buyer_summary", "full_technical", "repair_priority"])
+    @pytest.mark.parametrize("fmt", ["pdf", "docx"])
+    def test_it_renders_exports_and_groups_by_system(self, name: str, fmt: str) -> None:
+        from pathlib import Path
+
+        template = Path(f"templates/{name}.html").read_text()
+        inspection = sample.sample_inspection()
+        result = pipeline.build(
+            inspection,
+            template,
+            sample.sample_photo_data(),
+            FakeSuperDocsClient(),
+            session_id=f"fmt-{name}",
+            polish=False,
+        )
+        card = verify_exports.verify(
+            data=result.exports[fmt].content,
+            fmt=fmt,
+            inspection=inspection,
+            expect_photos=binding.declares_region(template, "photo"),
+        )
+        assert card.passed, card.render()
+
+    def test_a_format_without_a_photo_region_carries_no_photographs(self) -> None:
+        from pathlib import Path
+
+        template = Path("templates/repair_priority.html").read_text()
+        assert not binding.declares_region(template, "photo")
+        inspection = sample.sample_inspection()
+        result = pipeline.build(
+            inspection,
+            template,
+            sample.sample_photo_data(),
+            FakeSuperDocsClient(),
+            session_id="fmt-none",
+            polish=False,
+        )
+        assert verify_exports.images_in_docx(result.exports["docx"].content) == []
+
+    def test_a_template_missing_the_finding_region_says_what_to_fix(self) -> None:
+        broken = "<h1>x</h1><!-- region:system --><h2>{{system_name}}</h2><!-- /region:system -->"
+        with pytest.raises(binding.TemplateError) as exc:
+            report.render(sample.sample_inspection(), broken)
+        assert "region:finding" in str(exc.value)
 
 
 class TestTheRailHoldsAllTheWayToTheFile:

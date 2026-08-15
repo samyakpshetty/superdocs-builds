@@ -128,7 +128,7 @@ def to_docx(html: str, images: ImageResolver) -> bytes:
 
 def to_pdf(html: str, images: ImageResolver) -> bytes:
     """A real PDF, laid out simply, with the photographs embedded."""
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open()
     page = doc.new_page()

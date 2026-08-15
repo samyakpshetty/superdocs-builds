@@ -61,6 +61,16 @@ def regions_in(html: str) -> set[str]:
     return {m.group("name") for m in _REGION.finditer(html)}
 
 
+def declares_region(html: str, name: str) -> bool:
+    """Whether a template declares a region anywhere, at any nesting depth.
+
+    A format decides what it carries. The repair-priority sheet has no photo region on
+    purpose, and the export verifier reads this rather than holding every format to the
+    same promise.
+    """
+    return bool(re.search(rf"<!--\s*region:{re.escape(name)}\s*-->", html))
+
+
 def placeholders_in(html: str) -> set[str]:
     """Every placeholder name, including those inside regions."""
     return set(_PLACEHOLDER.findall(html))

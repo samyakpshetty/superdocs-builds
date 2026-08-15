@@ -19,6 +19,7 @@ from inspection_report.render import pipeline
 from inspection_report.superdocs.base import SuperDocsClient
 from inspection_report.superdocs.fake import FakeSuperDocsClient
 from inspection_report.superdocs.live import LiveSuperDocsClient
+from inspection_report.templates import binding
 from inspection_report.verify import exports as verify_exports
 
 _log = get_logger("inspection_report.cli")
@@ -95,12 +96,20 @@ def demo(template: str, polish: bool, model_tier: str) -> None:
             )
 
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    # What the report is held to depends on what the format promises: the repair-priority
+    # sheet declares no photo region, so photographs are not expected in it.
+    carries_photos = binding.declares_region(template_path.read_text(), "photo")
     ok = True
     for fmt, export in result.exports.items():
         path = EXPORT_DIR / export.filename
         path.write_bytes(export.content)
         click.echo(f"  wrote {path} ({len(export.content):,} bytes)")
-        report = verify_exports.verify(data=export.content, fmt=fmt, inspection=inspection)
+        report = verify_exports.verify(
+            data=export.content,
+            fmt=fmt,
+            inspection=inspection,
+            expect_photos=carries_photos,
+        )
         click.echo(report.render())
         ok = ok and report.passed
 

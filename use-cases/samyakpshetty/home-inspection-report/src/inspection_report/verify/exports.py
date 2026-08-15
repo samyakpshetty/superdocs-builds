@@ -76,7 +76,7 @@ def images_in_docx(data: bytes) -> list[str]:
 
 
 def text_of_pdf(data: bytes) -> str:
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open(stream=data, filetype="pdf")
     try:
@@ -86,7 +86,7 @@ def text_of_pdf(data: bytes) -> str:
 
 
 def images_in_pdf(data: bytes) -> int:
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open(stream=data, filetype="pdf")
     try:
