@@ -19,7 +19,7 @@ from inspection_report.render import pipeline
 from inspection_report.superdocs.base import SuperDocsClient
 from inspection_report.superdocs.fake import FakeSuperDocsClient
 from inspection_report.superdocs.live import LiveSuperDocsClient
-from inspection_report.templates import binding
+from inspection_report.templates import binding, registry
 from inspection_report.verify import exports as verify_exports
 
 _log = get_logger("inspection_report.cli")
@@ -70,9 +70,20 @@ def demo(template: str, polish: bool, model_tier: str) -> None:
         f"provider={provider}, format={template}"
     )
 
+    # The format is registered with SuperDocs and the report is built from the document
+    # SuperDocs hands back, not from the local file. The local copy is the fallback only.
+    report_format = registry.ensure_registered(client, TEMPLATE_DIR)[template]
+    template_html, from_service = registry.materialise(
+        client, report_format, session_id=f"format-{report_format.content_sha[:8]}"
+    )
+    click.echo(
+        f"  format: '{report_format.name}' — skeleton "
+        + ("loaded from SuperDocs" if from_service else "served from the local copy")
+    )
+
     result = pipeline.build(
         inspection,
-        template_path.read_text(),
+        template_html,
         photo_data,
         client,
         session_id=f"inspection-{inspection.id.hex[:12]}",
@@ -101,7 +112,7 @@ def demo(template: str, polish: bool, model_tier: str) -> None:
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     # What the report is held to depends on what the format promises: the repair-priority
     # sheet declares no photo region, so photographs are not expected in it.
-    carries_photos = binding.declares_region(template_path.read_text(), "photo")
+    carries_photos = binding.declares_region(template_html, "photo")
     ok = True
     for fmt, export in result.exports.items():
         path = EXPORT_DIR / export.filename

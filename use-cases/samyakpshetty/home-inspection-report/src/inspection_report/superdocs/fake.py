@@ -45,6 +45,10 @@ _DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document
 _BLOCK = re.compile(r"<(h[1-4]|p|li|blockquote)(\s[^>]*)?>", re.IGNORECASE)
 # Everything `data-*` except the service's own chunk id, which is what upload adds.
 _CUSTOM_DATA_ATTR = re.compile(r'\s+data-(?!chunk-id\b)[\w-]+="[^"]*"', re.IGNORECASE)
+# SuperDocs parses a document into structured chunks and drops HTML comments on the way:
+# verified live, four sent and none returned. Anything that has to survive a round trip
+# cannot be a comment.
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 # Mirrors the live bucket, so redaction and capability-URL handling are exercised offline
 # against a realistically shaped URL rather than a placeholder.
@@ -84,6 +88,12 @@ _EXPANSIONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
 )
 
 
+def _requested_template(message: str) -> str | None:
+    """The one chat instruction that means "give me a saved format", not "edit this document"."""
+    m = re.search(r"load my ['\"](.+?)['\"] template", message, re.IGNORECASE)
+    return m.group(1) if m else None
+
+
 @dataclass
 class _Session:
     html: str = ""
@@ -107,6 +117,7 @@ class FakeSuperDocsClient:
     sessions: dict[str, _Session] = field(default_factory=dict)
     jobs: dict[str, _Job] = field(default_factory=dict)
     templates: dict[str, TemplateRef] = field(default_factory=dict)
+    template_bytes: dict[str, bytes] = field(default_factory=dict)
     images: ImageResolver = field(default_factory=ImageResolver)
     ops_charged: int = 0
     ops_budget: int = 10_000
@@ -134,7 +145,7 @@ class FakeSuperDocsClient:
             cid = hashlib.sha1(f"{session_id}:{next(counter)}".encode()).hexdigest()[:32]
             return f'<{tag}{attrs} data-chunk-id="{cid}">'
 
-        html = _BLOCK.sub(stamp, document_html)
+        html = _BLOCK.sub(stamp, _HTML_COMMENT.sub("", document_html))
         session = self.sessions.setdefault(session_id, _Session())
         session.html = html
         session.version += 1
@@ -154,6 +165,13 @@ class FakeSuperDocsClient:
         model_tier: str = "core",
         thinking_depth: str = "balanced",
     ) -> str:
+        wanted = _requested_template(message)
+        if wanted is not None:
+            # Loading a saved template is how a report format actually reaches a session:
+            # there is no endpoint that applies one, and the live AI does exactly this when
+            # asked for a template by name. A session need not hold a document yet.
+            return self._load_template(session_id=session_id, name=wanted)
+
         session = self.sessions.get(session_id)
         if session is None:
             raise SuperDocsError(
@@ -179,6 +197,32 @@ class FakeSuperDocsClient:
             else JobStatus.COMPLETED,
             diffs=diffs,
             document_html=session.html,
+        )
+        return job_id
+
+    def _load_template(self, *, session_id: str, name: str) -> str:
+        """Serve a registered template back as the session's document.
+
+        Refuses a name it does not hold rather than inventing a document, because a report
+        built on an unrecognised skeleton is worse than a report that failed to build.
+        """
+        match = next((t for t in self.templates.values() if t.name.startswith(name)), None)
+        if match is None:
+            raise SuperDocsError(
+                f"no saved template matching {name!r}. Register the format before asking for it."
+            )
+        # Served the way the live service serves it: parsed, which means comments are gone.
+        html = _HTML_COMMENT.sub("", self.template_bytes[match.id].decode("utf-8"))
+        self.ops_charged += 1
+        job_id = self._next("job")
+        self.sessions.setdefault(session_id, _Session()).html = html
+        self.jobs[job_id] = _Job(
+            job_id=job_id,
+            session_id=session_id,
+            status=JobStatus.COMPLETED,
+            diffs=[],
+            approved=True,
+            document_html=html,
         )
         return job_id
 
@@ -332,6 +376,7 @@ class FakeSuperDocsClient:
             created_at="2026-08-15T00:00:00+00:00",
         )
         self.templates[tid] = ref
+        self.template_bytes[tid] = data
         return ref
 
     def list_templates(self) -> list[TemplateRef]:
@@ -341,6 +386,7 @@ class FakeSuperDocsClient:
         if template_id not in self.templates:
             raise SuperDocsError(f"unknown template {template_id!r}")
         del self.templates[template_id]
+        self.template_bytes.pop(template_id, None)
 
     # ------------------------------------------------------------- operational
 
