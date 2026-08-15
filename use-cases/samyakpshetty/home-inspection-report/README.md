@@ -10,6 +10,10 @@ photographs that show it, assembled into a formatted field report on export — 
 language stays observational, because an inspection reports what was seen and recommends what
 to do next. It never certifies the condition of a property.
 
+![The review gate: what the inspector wrote, what SuperDocs proposed for the buyer, and the
+observational-language rail's objection marked in the sentence where it
+happens.](docs/review-gate.png)
+
 ## What it does
 
 1. **An inspection is structured data.** A property, an inspector, and findings, each one
@@ -18,16 +22,19 @@ to do next. It never certifies the condition of a property.
    read, the image is decoded to prove it is an image, and **EXIF is stripped** — a phone
    photograph of a house carries the house's GPS coordinates, and this report goes to buyers,
    agents and lenders.
-3. **The report is rendered deterministically into a format.** Which system a finding appears
-   under, and in what order, is decided by code from the system catalogue and the severity
-   ranks. No model touches structure.
-4. **SuperDocs rewrites the field notes** into something a first-time buyer can read, as
+3. **The report format is a Word document**, registered with SuperDocs and loaded back from
+   it. The firm's letterhead, severity legend, standing preamble and limitations clause are
+   theirs, in a file they can open and redesign.
+4. **The report is rendered deterministically into that format.** Which system a finding
+   appears under, and in what order, is decided by code from the system catalogue and the
+   severity ranks. No model touches structure.
+5. **SuperDocs rewrites the field notes** into something a first-time buyer can read, as
    proposed changes held for review rather than applied.
-5. **Every proposal passes an observational-language rail before it can be approved.** A
+6. **Every proposal passes an observational-language rail before it can be approved.** A
    rewrite that certifies, guarantees, declares something safe or compliant, predicts a
    lifespan, estimates a cost or reassures the reader is refused, and the inspector's own
    words stand. The report loses polish, never content.
-6. **The export is read back and checked.** Every system present and in catalogue order,
+7. **The export is read back and checked.** Every system present and in catalogue order,
    every finding under its own heading, every severity label intact, every photograph
    embedded as real image bytes, no capability URL in the text, and the rail still clean in
    the finished file.
@@ -46,12 +53,13 @@ those files and verifies them:
 
 ```
 Building 14 Alder Lane, Fairhaven, FH8 2QR — 8 findings, 8 photographs, provider=fake, format=buyer_summary
+  format: 'Home inspection format — buyer_summary [600b87c6]' — skeleton loaded from SuperDocs
   photographs: 8 uploaded, 0 reused
   rewrites: 8 proposed, 6 approved, 2 refused by the language rail
     refused — 'for safety' (safety); 'functioning correctly' (scoped)
     refused — "typical for the home's age" (reassurance)
-  operations: 1 charged, 9999 remaining
-  wrote exports/14-alder-lane-2026-08-12.pdf (88,023 bytes)
+  operations: 1 charged, 9998 remaining
+  wrote exports/14-alder-lane-2026-08-12.pdf (165,192 bytes)
   PDF
     [PASS] every inspection system appears — 6 systems
     [PASS] systems appear in catalogue order
@@ -62,12 +70,22 @@ Building 14 Alder Lane, Fairhaven, FH8 2QR — 8 findings, 8 photographs, provid
     [PASS] no photo URLs leaked into the document text
 ```
 
+For the interface an inspector actually uses:
+
+```bash
+docker compose up
+```
+
+Postgres, the API and the browser front end at **http://localhost:5174**. Still no API key —
+`PROVIDER` defaults to the deterministic fake, so a fresh clone gives you a working
+application rather than a login wall.
+
 ```bash
 make check
 ```
 
-ruff + `ruff format --check` + `mypy --strict` + the full test suite: **106 tests, none of
-which need an API key.**
+ruff + `ruff format --check` + `mypy --strict` + the full test suite + the front end's
+TypeScript: **145 tests, none of which need an API key.**
 
 Other targets: `make verify` re-checks the files already in `exports/`, and
 `docker compose run --rm --no-deps api python -m inspection_report.cli formats` lists the
@@ -89,6 +107,26 @@ because the right default for a legal document is not the right default for a qu
 
 </details>
 
+## The interface
+
+Three stages, because the gate is a real stage and not a modal: **the walk**, **the review**,
+**the export**. Each is a URL, so a property can be bookmarked and a reviewer can be sent
+straight to the gate.
+
+![The walk: the severity × system grid showing the shape of a property at a glance, and the
+findings recorded under each system.](docs/the-walk.png)
+
+The grid is the one view that answers the question everybody asks first — where are the
+problems, and how bad. An empty row says nothing was observed in that system, which is not
+the same as it having been skipped, and the report says so too.
+
+Colour means severity here and nothing else. That rules out the usual way of making an
+interface look designed — a brand accent, a coloured header — so this one is built out of
+type, rule and space instead. On a document where a buyer has to spot "recommend prompt
+evaluation" at a glance, a decorative colour competing with the one that carries meaning is
+not a style choice, it is a hazard. Both themes are real: an attic at midday and a crawlspace
+both happen.
+
 ## Report formats
 
 Three ship, and switching between them is a data change:
@@ -99,13 +137,29 @@ Three ship, and switching between them is a data change:
 | `full_technical` | a specialist quoting remedial work | yes |
 | `repair_priority` | a working list for collecting quotes | no, by design |
 
-A format is an HTML document with `{{placeholder}}` values and
-`<!-- region:name -->` blocks that repeat per system, per finding and per photograph.
-Binding is strict in both directions: a template that asks for something this build does not
-supply is an error naming the region, and a placeholder left unfilled is an error rather than
-a gap in a document a buyer reads. What the verifier holds a format to is read from the
-template — the repair-priority sheet declares no photo region, so photographs are not expected
-in it.
+**A format is a `.docx`** — a Word document with letterhead, the severity legend, the standing
+preamble, a section per inspection system and the limitations clause. A firm opens one in
+Word, changes it, and drops it back in.
+
+The markers are things a person types, not markup:
+
+```
+[firm name]  [property address]  [inspector]  [date of inspection]
+[systems inspected]  [system summary]  [findings]
+[severity label]  [location]  [observation]  [recommendation]
+[photograph]  [caption]
+```
+
+A format also carries **one worked example** showing how a single finding is recorded. The
+binder reads that example *as* the per-finding template and then removes the section from the
+finished report — so a firm changes the layout of every finding by editing one example in
+Word, with no code change. What the verifier holds a format to is read from the format
+itself: the repair-priority list shows no photograph in its example, so photographs are not
+expected in it.
+
+Binding is strict in both directions. A format that uses bracketed text which is not a token
+is an error naming the typo and listing the vocabulary, and a token nobody fills is an error
+rather than a gap in a document a buyer reads.
 
 The inspection systems, the severity scale and the language rail are all data too, in
 `config/`. Adding a seventh system, grading on four levels instead of five, or operating
@@ -115,12 +169,12 @@ under a firm's own wording rules is a change to YAML and to nothing else.
 
 | Surface | How |
 |---|---|
+| **Templates** | each report format registered, then **loaded back and built on** — delete it from the account and no report can be produced |
 | **Upload** | the rendered report goes up as one document |
 | **Chat** *(review mode)* | rewrites each field note for a first-time reader, held for approval |
 | **Approve** | one call per job, carrying every decision including the rail's refusals |
 | **Export** | PDF and DOCX with real options — paper size, margins, filename |
 | **Images** | every photograph uploaded and embedded in the document by URL |
-| **Templates** | each report format registered for reuse across sessions |
 
 Built on the REST API. The brief treats REST and MCP as interchangeable; REST was the shorter
 path to the four calls.
@@ -129,14 +183,27 @@ path to the four calls.
 
 Where the brief or the API was silent, I made a call and recorded it here.
 
-- **Structure is code; prose is the AI; presentation is the template.** Templates are
-  *AI-referenced* rather than programmatically applied — there is no "apply template X"
-  endpoint — so letting a model own structure would have forfeited the exact guarantee the
-  brief asks me to confirm. The AI is given the job it is reliable at and nothing more.
-- **We author the report formats.** The premise is that existing inspection reports are not
-  formatted for a first-time buyer, so binding data into a firm's existing report would
-  reproduce the problem. A builder that requires you to supply the format is a mail-merge
-  engine.
+- **Structure is code; prose is the AI; presentation is the format.** I tested the opposite
+  design rather than assuming this one. Asked to assemble the whole report from a registered
+  format and eight supplied findings, SuperDocs' AI applied one unrelated change, charged an
+  operation, and replied asking for the findings that were in the message — while the same
+  session, same document and same approval mode applied three scattered replacements
+  flawlessly and expanded one placeholder paragraph into a six-paragraph section. The
+  boundary is the scope of a single request, not message size or instruction-following. So
+  the AI keeps the narrow, targeted rewriting it is measurably good at, and the one thing the
+  brief asks me to confirm stays a guarantee rather than a hope. The measurements are in
+  [PROGRESS.md](PROGRESS.md).
+- **The markers are bracketed text because HTML comments do not survive an upload.** The
+  first design marked repeatable regions with `<!-- region:system -->`; upload parses a
+  document into chunks and drops comments, so a registered format came back without the
+  markers the binder needed and the round trip could never complete. Bracketed text is not
+  markup, so nothing strips it — and it reads as an instruction to whoever is authoring the
+  format, which a comment never did.
+- **We ship the formats, and they are editable.** The premise is that existing inspection
+  reports are not formatted for a first-time buyer, so binding data into a firm's existing
+  report would reproduce the problem. A builder that requires you to supply the format is a
+  mail-merge engine. Three ship; because they are Word documents, a firm can then make them
+  their own.
 - **The rail governs generated text, never the inspector's own.** They are the licensed
   professional and the report is theirs. What this system may not do is put certification
   language in their name.
@@ -167,23 +234,34 @@ Where the brief or the API was silent, I made a call and recorded it here.
   approved rewrites. Every approved rewrite is now read back out of the exported file and the
   export is repeated until they are present. Exports cost nothing, which is what makes
   re-reading the right answer.
+- **A finished report stays exportable.** The session is where the document lives on
+  SuperDocs' side, and a session does not outlive a restart. Every finding, every approved
+  rewrite and every photograph is in our own database, so the document is rebuilt from there
+  and exported rather than failing on work that is already signed off — and the response says
+  which path produced the file.
 - **Idempotent where it costs money.** A photograph's identity is the hash of its cleaned
-  bytes, so a crash and re-run re-uploads nothing.
+  bytes, so a crash and re-run re-uploads nothing. A format is registered once per version,
+  by content hash.
 - **Untrusted input is treated as such.** Size caps before read, decode-verification rather
   than trusting an extension, EXIF stripped, everything a person typed escaped before it
   becomes markup, and rejection messages that never echo file content.
 - **No secret in code, logs or history.** `.env` is git-ignored; only `.env.example` with
-  placeholders is tracked.
+  placeholders is tracked. The API key is held server-side and never reaches the browser,
+  which is also why photographs are served from `/api/photos/{id}` rather than by handing the
+  browser the URL SuperDocs returned.
 
 ## Limitations
 
-- **No web interface yet.** The builder is driven by its CLI and its typed API; the browser
-  front end an inspector would use on site is the next piece of work, and I would rather ship
-  a spine that is proven than a screen that is not.
 - **The offline exporter is a stand-in.** With `PROVIDER=fake` the PDF and DOCX are written
-  locally so the demo and the tests are real end to end, but their typography is plain. The
-  live path uses SuperDocs' own exporter, which is what the formatting is designed around.
-- **One report at a time.** There is no multi-property scheduling or job queue.
+  locally so the demo and the tests are real end to end. It carries emphasis, size and
+  alignment, but it is a simple renderer — no page furniture, no widow control, and its line
+  breaking is its own. The live path uses SuperDocs' exporter, which is what the formats are
+  designed around and which reproduces the Word document properly.
+- **One firm, one report at a time.** No multi-property scheduling, no job queue, and no user
+  accounts beyond a single firm.
+- **The format vocabulary is fixed.** A firm can change the layout, the wording and the design
+  freely, but the thirteen tokens above are the ones this build fills. A format wanting a
+  fourteenth needs a code change.
 - **Photographs are not analysed.** Deliberate: asking a model to describe a property from a
   photograph invites exactly the over-claiming this build exists to prevent. The photograph is
   evidence the reader looks at; the claim stays the inspector's.

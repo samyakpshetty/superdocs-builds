@@ -51,11 +51,56 @@ function useToast(): [React.ReactNode, (message: string) => void] {
   return [node, setMessage];
 }
 
+/**
+ * Where you are, in the address bar.
+ *
+ * `#/` is the list; `#/i/<id>/walk|review|export` is one inspection at one stage. Holding
+ * this in React state alone meant a property could not be bookmarked, a reload dropped you
+ * back at the list, and the browser's own back button did nothing — on a tool someone opens
+ * on a phone, mid-job, on a bad connection. It is also how a reviewer gets sent straight to
+ * the gate rather than "open the app and find 14 Alder Lane".
+ *
+ * Hash rather than history, because this is served as a static bundle and a path route would
+ * need the server to rewrite unknown paths back to index.html.
+ */
+const SCREENS: Screen[] = ["walk", "gate", "export"];
+const SCREEN_SLUGS: Record<Screen, string> = {
+  list: "",
+  walk: "walk",
+  gate: "review",
+  export: "export",
+};
+
+function readHash(): { screen: Screen; current: string | null } {
+  const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  if (parts[0] !== "i" || !parts[1]) return { screen: "list", current: null };
+  const screen = SCREENS.find((s) => SCREEN_SLUGS[s] === parts[2]) ?? "walk";
+  return { screen, current: parts[1] };
+}
+
+function writeHash(screen: Screen, current: string | null): void {
+  const next = screen === "list" || !current ? "#/" : `#/i/${current}/${SCREEN_SLUGS[screen]}`;
+  if (window.location.hash !== next) window.location.hash = next;
+}
+
 export default function App() {
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
-  const [screen, setScreen] = useState<Screen>("list");
-  const [current, setCurrent] = useState<string | null>(null);
+  const [route, setRoute] = useState(readHash);
   const [fatal, setFatal] = useState<string | null>(null);
+  const { screen, current } = route;
+
+  // The address bar is the source of truth, so the back button works by construction rather
+  // than by keeping a second history of our own in step with the browser's.
+  useEffect(() => {
+    const onHash = () => setRoute(readHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const go = useCallback((next: Screen, id: string | null) => {
+    writeHash(next, id);
+    setRoute({ screen: next, current: id });
+  }, []);
 
   const load = useCallback(() => {
     setFatal(null);
@@ -71,13 +116,7 @@ export default function App() {
       <header className="topbar">
         <span className="topbar__title">Inspection report builder</span>
         {current && screen !== "list" && (
-          <button
-            className="btn--quiet btn--small"
-            onClick={() => {
-              setCurrent(null);
-              setScreen("list");
-            }}
-          >
+          <button className="btn--quiet btn--small" onClick={() => go("list", null)}>
             All inspections
           </button>
         )}
@@ -90,20 +129,14 @@ export default function App() {
         {catalogue && !fatal && (
           <>
             {screen === "list" && (
-              <InspectionList
-                catalogue={catalogue}
-                onOpen={(id) => {
-                  setCurrent(id);
-                  setScreen("walk");
-                }}
-              />
+              <InspectionList catalogue={catalogue} onOpen={(id) => go("walk", id)} />
             )}
             {screen !== "list" && current && (
               <InspectionWorkspace
                 key={current}
                 id={current}
                 screen={screen}
-                setScreen={setScreen}
+                setScreen={(next) => go(next, current)}
                 catalogue={catalogue}
               />
             )}
