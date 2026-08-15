@@ -31,6 +31,7 @@ def built() -> tuple[pipeline.PipelineResult, object]:
         sample.sample_photo_data(),
         FakeSuperDocsClient(),
         session_id="test-session",
+        settle_s=0.0,
     )
     return result, inspection
 
@@ -93,6 +94,7 @@ class TestEveryShippedFormat:
             FakeSuperDocsClient(),
             session_id=f"fmt-{name}",
             polish=False,
+            settle_s=0.0,
         )
         card = verify_exports.verify(
             data=result.exports[fmt].content,
@@ -115,6 +117,7 @@ class TestEveryShippedFormat:
             FakeSuperDocsClient(),
             session_id="fmt-none",
             polish=False,
+            settle_s=0.0,
         )
         assert verify_exports.images_in_docx(result.exports["docx"].content) == []
 

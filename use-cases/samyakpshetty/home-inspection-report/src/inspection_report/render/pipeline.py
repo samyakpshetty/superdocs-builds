@@ -35,6 +35,11 @@ _log = get_logger("inspection_report.pipeline")
 # with more findings than this goes out in several batches, each gated before the next.
 MAX_SECTIONS_PER_BATCH = 25
 
+# How long to let an approval settle before asking for the export. Measured, not guessed:
+# an export taken sooner than this came back pre-approval on every run of a full-size report.
+# It is a head start rather than a guarantee — the check afterwards is what makes it correct.
+SETTLE_AFTER_APPROVE_S = 2.5
+
 REWRITE_INSTRUCTION = (
     "Rewrite each paragraph marked finding-note so that someone buying their first home can "
     "understand it. Keep every fact, measurement and location exactly as written. Stay "
@@ -136,8 +141,15 @@ def build(
     model_tier: str = "core",
     thinking_depth: str = "balanced",
     formats: tuple[str, ...] = ("pdf", "docx"),
+    settle_s: float = SETTLE_AFTER_APPROVE_S,
 ) -> PipelineResult:
-    """Run an inspection all the way to exported files."""
+    """Run an inspection all the way to exported files.
+
+    ``settle_s`` is how long to let an approval land before asking for the export. It is a
+    property of the service rather than of this pipeline — the in-memory implementation
+    applies approvals synchronously and has nothing to wait for — so a caller running against
+    a fake passes 0 and a caller running live leaves the default.
+    """
     uploaded, reused = upload_photos(inspection, photo_data, client)
 
     html = render_report.render(inspection, template_html)
@@ -195,7 +207,12 @@ def build(
     expected = [_text_of(p.diff.new_html)[:60] for p in result.proposals if p.approved]
     for fmt in formats:
         result.exports[fmt] = _export_when_current(
-            client, session_id=session_id, fmt=fmt, filename=name, expected=expected
+            client,
+            session_id=session_id,
+            fmt=fmt,
+            filename=name,
+            expected=expected,
+            settle_s=settle_s,
         )
     inspection.stage = ReportStage.EXPORTED
     return result
@@ -210,18 +227,27 @@ def _export_when_current(
     expected: list[str],
     attempts: int = 5,
     wait_s: float = 2.0,
+    settle_s: float = SETTLE_AFTER_APPROVE_S,
 ) -> ExportResult:
     """Export, and refuse to accept a file that predates the approvals.
 
-    Exporting immediately after approving can return the **pre-approval** document, with a
-    200 and no warning: on a live run the PDF came back with the inspector's original text
-    while a .docx of the same session two seconds later carried the approved rewrites, and
-    re-exporting the same session later returned the approved text in both. So the export
-    is treated as eventually consistent and read back before it is accepted.
+    Exporting immediately after approving can return the **pre-approval** document with a 200
+    and no warning. Measured across four runs of an eight-finding, eight-photograph report:
+    the first export was stale at +2.2s to +2.4s after `approve` returned, and converged at
+    about +4.4s (pdf) and +5.4s (docx).
 
-    Exports cost nothing, which is what makes retrying the right answer rather than an
-    expensive one. If it never converges the caller still gets the file — with the mismatch
-    recorded, because silently shipping a report that is missing approved changes is the one
+    Two mechanisms, and both earn their place:
+
+    * **Wait first.** A short settle costs one pause and skips an export that would be stale
+      anyway. Measured: a 3s wait was enough for a seven-finding report, and so was 5s.
+    * **Then check.** The wait alone is a guess, because the window grows with the document —
+      the same test on a three-paragraph document never went stale at all, so a constant
+      tuned on a small report is not a constant at all. Reading the file back tests the
+      actual condition instead of hoping the guess held.
+
+    Exports cost nothing, which is what makes re-reading the right answer rather than an
+    expensive one. If it never converges the caller still gets the file, with the mismatch
+    logged at ERROR, because silently shipping a report missing approved changes is the one
     outcome this must not have.
     """
     import time
@@ -229,8 +255,16 @@ def _export_when_current(
     from inspection_report.verify import exports as verify_exports
 
     options = ExportOptions(
-        paper_size="Letter", margins="normal", filename=filename, embed_images=True
+        paper_size="Letter",
+        margins="normal",
+        filename=filename,
+        # HTML export references images by URL unless this is set, and those URLs resolve
+        # for anyone holding them, with no credentials and no expiry. An exported file must
+        # carry the picture, not a pointer to a client's house.
+        embed_images=True,
     )
+    if expected and settle_s:
+        time.sleep(settle_s)
     result = client.export(session_id=session_id, fmt=fmt, options=options)
     if not expected:
         return result

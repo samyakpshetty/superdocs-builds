@@ -78,6 +78,9 @@ def demo(template: str, polish: bool, model_tier: str) -> None:
         session_id=f"inspection-{inspection.id.hex[:12]}",
         polish=polish,
         model_tier=model_tier,
+        # The in-memory implementation applies approvals synchronously; only the live
+        # service needs time to settle before an export reflects them.
+        settle_s=pipeline.SETTLE_AFTER_APPROVE_S if provider == "live" else 0.0,
     )
 
     click.echo(f"  photographs: {result.photos_uploaded} uploaded, {result.photos_reused} reused")
