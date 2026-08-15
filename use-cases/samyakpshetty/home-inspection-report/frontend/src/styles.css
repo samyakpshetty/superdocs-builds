@@ -1,0 +1,343 @@
+/*
+ * The design system, such as it is. Four decisions, each made for this job rather than
+ * inherited from a template:
+ *
+ * 1. COLOUR MEANS SEVERITY AND NOTHING ELSE. The palette below has exactly one family of
+ *    saturated colours and they are the severity levels, straight out of config/severity.yaml.
+ *    Everything else is neutral. On a report where a buyer has to spot "recommend prompt
+ *    evaluation" at a glance, a decorative accent competing with the one that carries meaning
+ *    is not a style choice, it is a hazard.
+ *
+ * 2. SYSTEM FONTS. An inspector loads this in a basement with one bar of signal. A webfont is
+ *    a render-blocking round trip for a typeface nobody will notice.
+ *
+ * 3. ONE RADIUS, ONE SHADOW. Mixed corner scales read as broken; there is a single 8px radius
+ *    and a single elevation, used only where elevation means something.
+ *
+ * 4. TOUCH TARGETS AT 44px. This is operated one-handed, outdoors, sometimes with a glove on.
+ *
+ * Light and dark are both real: an attic at midday and a crawlspace both happen.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --ink: #17181a;
+  --ink-soft: #55585e;
+  /* Darkened from #83878e, which measured 3.34:1 on --surface and failed AA for the
+     small text it is used on (hints, field labels). Muted is not the same as unreadable,
+     and this is read outdoors. */
+  --ink-faint: #6b6f77;
+  --paper: #ffffff;
+  --surface: #f6f6f5;
+  --surface-2: #ecedeb;
+  --line: #d9dad7;
+  --line-strong: #b9bbb7;
+
+  /* Severity — the only saturated colour in the product. */
+  --sev-safety_concern: #b23a2e;
+  --sev-repair: #c4682b;
+  --sev-maintenance: #8a6a1f;
+  --sev-monitor: #3f6d8c;
+  --sev-observation: #5c6068;
+
+  --ok: #2f6b46;
+  --warn: #8a5a12;
+  --bad: #b23a2e;
+
+  --radius: 8px;
+  --shadow: 0 1px 2px rgb(23 24 26 / 0.06), 0 4px 12px rgb(23 24 26 / 0.06);
+  --tap: 44px;
+
+  --step-0: 0.95rem;
+  --step-1: 1.1rem;
+  --step-2: 1.35rem;
+  --step-3: 1.7rem;
+  --space: 1rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #eceded;
+    --ink-soft: #a9adb3;
+    /* Same check in dark: #7c8188 measured 4.20:1 on --surface. */
+    --ink-faint: #878d95;
+    --paper: #16171a;
+    --surface: #1d1f23;
+    --surface-2: #26292e;
+    --line: #33373d;
+    --line-strong: #474c53;
+
+    --sev-safety_concern: #e0705f;
+    --sev-repair: #e0925a;
+    --sev-maintenance: #c8a24d;
+    --sev-monitor: #78a8c6;
+    --sev-observation: #9aa0a8;
+
+    --ok: #6fbf8e;
+    --warn: #d0a24e;
+    --bad: #e0705f;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 14px rgb(0 0 0 / 0.35);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font: var(--step-0) / 1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { line-height: 1.25; margin: 0; font-weight: 620; letter-spacing: -0.01em; }
+h1 { font-size: var(--step-3); }
+h2 { font-size: var(--step-2); }
+h3 { font-size: var(--step-1); }
+p { margin: 0; }
+
+/* ---------------------------------------------------------------- layout */
+
+.shell { min-height: 100dvh; display: flex; flex-direction: column; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.7rem clamp(0.9rem, 3vw, 1.6rem);
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  /* Capped so it never eats the viewport on a phone held in one hand. */
+  min-height: 56px;
+}
+.topbar__title { font-weight: 640; font-size: var(--step-1); white-space: nowrap; }
+.topbar__meta { margin-left: auto; color: var(--ink-faint); font-size: 0.8rem; }
+
+
+.main {
+  flex: 1;
+  width: 100%;
+  max-width: 900px;
+  margin-inline: auto;
+  padding: clamp(0.9rem, 3vw, 1.6rem);
+  display: grid;
+  gap: 1.1rem;
+  /* `flex: 1` makes this taller than its content on a short page, and a grid's default
+     align-content stretches auto-sized rows to absorb the slack — which silently inflated
+     every section on the page. Rows keep their content height; the slack stays at the end. */
+  align-content: start;
+}
+
+.stack { display: grid; gap: 0.75rem; }
+.row { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+
+/* ----------------------------------------------------------------- cards */
+
+.card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+.card--flat { box-shadow: none; }
+.card--raised { box-shadow: var(--shadow); }
+
+/* Centre, not baseline: a 44px touch target next to a heading throws the baseline box out. */
+.section-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.section-head__count { color: var(--ink-faint); font-size: 0.85rem; }
+
+/* -------------------------------------------------------------- severity */
+
+.sev {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.78rem; font-weight: 640; letter-spacing: 0.01em;
+  padding: 0.22rem 0.5rem;
+  border-radius: var(--radius);
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.sev::before {
+  content: ""; width: 0.5rem; height: 0.5rem; border-radius: 2px;
+  background: currentColor; flex: none;
+}
+/* The label carries the meaning; the colour only reinforces it. Anyone who cannot
+   distinguish these still reads the words, which is why the text is never dropped. */
+.sev--safety_concern { color: var(--sev-safety_concern); }
+.sev--repair { color: var(--sev-repair); }
+.sev--maintenance { color: var(--sev-maintenance); }
+.sev--monitor { color: var(--sev-monitor); }
+.sev--observation { color: var(--sev-observation); }
+
+/* --------------------------------------------------------------- controls */
+
+button, .btn {
+  font: inherit;
+  min-height: var(--tap);
+  padding: 0 1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem;
+}
+button:hover:not(:disabled) { background: var(--surface-2); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* Inverted, so the label is always the paper colour against the ink colour — the one
+   combination that cannot fail a contrast check in either theme. */
+.btn--primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn--primary:hover:not(:disabled) { background: var(--ink); opacity: 0.9; }
+.btn--quiet { border-color: transparent; background: transparent; }
+.btn--small { min-height: 34px; padding: 0 0.7rem; font-size: 0.85rem; }
+
+label { display: grid; gap: 0.3rem; font-size: 0.85rem; color: var(--ink-soft); }
+input, select, textarea {
+  font: inherit;
+  min-height: var(--tap);
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+  width: 100%;
+}
+textarea { min-height: 88px; resize: vertical; line-height: 1.5; }
+.field-grid { display: grid; gap: 0.7rem; grid-template-columns: 1fr; }
+@media (min-width: 620px) { .field-grid--2 { grid-template-columns: 1fr 1fr; } }
+
+.hint { font-size: 0.8rem; color: var(--ink-faint); }
+
+/* ------------------------------------------------------------ rail notice */
+
+.notice {
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  padding: 0.7rem 0.8rem;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.87rem;
+  background: var(--surface);
+}
+.notice--refused { border-color: var(--bad); }
+.notice--ok { border-color: var(--ok); }
+.notice__head { font-weight: 640; display: flex; gap: 0.4rem; align-items: center; }
+.notice--refused .notice__head { color: var(--bad); }
+.notice--ok .notice__head { color: var(--ok); }
+.notice code {
+  background: var(--surface-2);
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+/* ------------------------------------------------------------------ diff */
+
+.diff { display: grid; gap: 0.5rem; }
+@media (min-width: 720px) { .diff { grid-template-columns: 1fr 1fr; } }
+.diff__side { display: grid; gap: 0.25rem; }
+.diff__label {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--ink-faint);
+}
+.diff__text {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.6rem 0.7rem;
+}
+
+/* ---------------------------------------------------------------- photos */
+
+.thumbs { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.thumb {
+  width: 92px; height: 70px; object-fit: cover;
+  border-radius: var(--radius); border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+/* ---------------------------------------------------------------- states */
+
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: var(--radius);
+  height: 1rem;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+  button:active:not(:disabled) { transform: none; }
+}
+
+.empty { display: grid; gap: 0.5rem; justify-items: start; color: var(--ink-soft); }
+.error {
+  border: 1px solid var(--bad); color: var(--bad);
+  border-radius: var(--radius); padding: 0.7rem 0.8rem; font-size: 0.87rem;
+  background: var(--paper);
+}
+
+.checklist { display: grid; gap: 0.35rem; }
+.check { display: flex; gap: 0.5rem; align-items: baseline; font-size: 0.87rem; }
+.check__mark { font-weight: 700; flex: none; }
+.check--pass .check__mark { color: var(--ok); }
+.check--fail .check__mark { color: var(--bad); }
+.check__detail { color: var(--ink-faint); }
+
+.tabs { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.tab {
+  min-height: 38px; padding: 0 0.75rem; font-size: 0.87rem;
+  border-radius: var(--radius); border: 1px solid var(--line);
+  background: var(--paper); cursor: pointer;
+}
+/* The hover rule on `button` is (0,2,1) and would out-specify a bare `.tab[aria-selected]`
+   at (0,2,0), repainting the background while leaving the inverted text colour — dark on
+   dark, about 1.1:1, invisible. Hover is stated explicitly so the pair always changes
+   together. Any inverted control needs this; it is the one contrast failure that only shows
+   up with a pointer on it, which is exactly when nobody is looking at a screenshot. */
+.tab[aria-selected="true"],
+.tab[aria-selected="true"]:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+.tab[aria-selected="true"]:hover:not(:disabled) { opacity: 0.92; }
+
+.list { display: grid; gap: 0.5rem; }
+.list__item {
+  display: flex; gap: 0.7rem; align-items: center;
+  padding: 0.7rem 0.8rem; background: var(--paper);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  text-align: left; width: 100%; min-height: var(--tap); cursor: pointer;
+}
+.list__item:hover { background: var(--surface-2); }
+.list__main { display: grid; gap: 0.15rem; flex: 1; }
+.list__meta { color: var(--ink-faint); font-size: 0.8rem; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- mobile
+ *
+ * Last in the file on purpose. These override component rules of equal specificity that are
+ * declared above, and cascade order is what decides — an earlier media query simply loses.
+ */
+@media (max-width: 640px) {
+  /* The bar was wrapping to three lines and taking 200px of an 812px viewport, which is
+     the exact thing its height cap exists to prevent. The strapline is decorative. */
+  .topbar { gap: 0.5rem; }
+  .topbar__title { font-size: 1rem; white-space: nowrap; }
+  .topbar__meta { display: none; }
+
+  /* Compact controls are a desktop affordance. On the device this is actually operated on
+     — one hand, outdoors, sometimes gloved — everything tappable goes back to full size. */
+  .tab, .btn--small { min-height: var(--tap); }
+}

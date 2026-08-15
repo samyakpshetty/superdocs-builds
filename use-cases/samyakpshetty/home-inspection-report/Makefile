@@ -5,7 +5,7 @@
 COMPOSE := docker compose
 RUN := $(COMPOSE) run --rm --no-deps api
 
-.PHONY: help build lint fmt typecheck test check demo verify up down clean
+.PHONY: help build lint fmt typecheck typecheck-web test check demo verify up down clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -26,8 +26,12 @@ typecheck: build ## mypy --strict, a real gate
 test: build ## Run the keyless test suite
 	$(RUN) pytest
 
-check: build ## The full gate: lint + format check + typecheck + tests
+typecheck-web: ## TypeScript, strict, in the same container the UI runs in
+	$(COMPOSE) run --rm --no-deps --entrypoint sh web -c "npx tsc -b --noEmit"
+
+check: build ## The full gate: lint + format check + typecheck + tests + frontend types
 	$(RUN) sh -c "ruff check . && ruff format --check . && mypy src && pytest"
+	$(MAKE) typecheck-web
 
 demo: build ## Build the sample report end to end on fakes — no key, no cost
 	$(RUN) python -m inspection_report.cli demo
