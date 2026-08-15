@@ -57,6 +57,7 @@ class Proposal:
     diff: ChunkDiff
     verdict: rail.Verdict
     approved: bool = False
+    decided: bool = False
 
     @property
     def refused_by_rail(self) -> bool:
@@ -67,6 +68,7 @@ class Proposal:
 class PipelineResult:
     session_id: str
     document_html: str
+    job_id: str = ""
     proposals: list[Proposal] = field(default_factory=list)
     exports: dict[str, ExportResult] = field(default_factory=dict)
     photos_uploaded: int = 0
@@ -130,6 +132,105 @@ def _poll(client: SuperDocsClient, job_id: str, *, attempts: int = 120, wait_s: 
     )
 
 
+def prepare(
+    inspection: Inspection,
+    template_html: str,
+    photo_data: dict[str, bytes],
+    client: SuperDocsClient,
+    *,
+    session_id: str,
+    known_uploads: dict[str, str] | None = None,
+    polish: bool = True,
+    model_tier: str = "core",
+    thinking_depth: str = "balanced",
+) -> PipelineResult:
+    """Get the report as far as the gate: photos up, document rendered, rewrites proposed.
+
+    Stops there deliberately. The decision belongs to a person, and a person takes minutes or
+    hours over it, so nothing here holds a connection open waiting for them.
+    """
+    uploaded, reused = upload_photos(inspection, photo_data, client, known=known_uploads)
+
+    html = render_report.render(inspection, template_html)
+    upload = client.upload_document(document_html=html, session_id=session_id)
+    inspection.stage = ReportStage.PREPARED
+    result = PipelineResult(
+        session_id=session_id,
+        document_html=upload.html,
+        photos_uploaded=uploaded,
+        photos_reused=reused,
+    )
+    if not polish:
+        return result
+
+    job_id = client.chat_async(
+        session_id=session_id,
+        message=REWRITE_INSTRUCTION,
+        approval_mode="ask_every_time",
+        model_tier=model_tier,
+        thinking_depth=thinking_depth,
+    )
+    job = _poll(client, job_id)
+    result.job_id = job_id
+    if job.usage:
+        result.ops_charged += job.usage.ops_charged
+        result.ops_remaining = job.usage.ops_remaining()
+
+    # "Asked for N changes and got zero" is a failure, not an answer — a job can finish with
+    # no error and propose nothing, which silently drops every rewrite.
+    if not job.chunk_diffs:
+        _log.warning("no_proposals", extra={"job_id": job_id})
+
+    for diff in job.chunk_diffs:
+        verdict = rail.check(_text_of(diff.new_html))
+        # A proposal the rail refuses is pre-decided against. A person may not approve it,
+        # because the rail is a rule rather than an opinion, but they see exactly why.
+        result.proposals.append(
+            Proposal(diff=diff, verdict=verdict, approved=False, decided=not verdict.clean)
+        )
+    inspection.stage = ReportStage.IN_REVIEW
+    return result
+
+
+def decide(
+    inspection: Inspection,
+    result: PipelineResult,
+    client: SuperDocsClient,
+    *,
+    approvals: dict[str, bool],
+) -> PipelineResult:
+    """Relay the human's decisions, once every change from the job has one.
+
+    ``approvals`` maps change_id to the person's decision. A change the rail refused is not
+    theirs to approve and stays refused whatever the map says.
+    """
+    if not result.proposals:
+        return result
+
+    for proposal in result.proposals:
+        if proposal.refused_by_rail:
+            proposal.approved = False
+        else:
+            proposal.approved = approvals.get(proposal.diff.change_id, False)
+        proposal.decided = True
+
+    decisions = [
+        ApprovalDecision(
+            change_id=p.diff.change_id,
+            approved=p.approved,
+            feedback=""
+            if p.verdict.clean
+            else f"Refused by the observational-language rail: {p.verdict.summary()}",
+        )
+        for p in result.proposals
+    ]
+    # One call per job: approving closes it, so every decision goes together.
+    client.approve(session_id=result.session_id, decisions=decisions, job_id=result.job_id)
+    inspection.stage = ReportStage.APPROVED
+    _apply_to_findings(inspection, result.proposals)
+    return result
+
+
 def build(
     inspection: Inspection,
     template_html: str,
@@ -143,65 +244,33 @@ def build(
     formats: tuple[str, ...] = ("pdf", "docx"),
     settle_s: float = SETTLE_AFTER_APPROVE_S,
 ) -> PipelineResult:
-    """Run an inspection all the way to exported files.
+    """Run an inspection all the way to exported files, taking the rail's verdict as the gate.
+
+    This is the unattended path — the command line and the tests. The interface drives
+    ``prepare`` and ``decide`` separately so a person holds the gate.
 
     ``settle_s`` is how long to let an approval land before asking for the export. It is a
     property of the service rather than of this pipeline — the in-memory implementation
     applies approvals synchronously and has nothing to wait for — so a caller running against
     a fake passes 0 and a caller running live leaves the default.
     """
-    uploaded, reused = upload_photos(inspection, photo_data, client)
-
-    html = render_report.render(inspection, template_html)
-    upload = client.upload_document(document_html=html, session_id=session_id)
-    inspection.stage = ReportStage.PREPARED
-    result = PipelineResult(
+    result = prepare(
+        inspection,
+        template_html,
+        photo_data,
+        client,
         session_id=session_id,
-        document_html=upload.html,
-        photos_uploaded=uploaded,
-        photos_reused=reused,
+        polish=polish,
+        model_tier=model_tier,
+        thinking_depth=thinking_depth,
     )
-
-    if polish:
-        job_id = client.chat_async(
-            session_id=session_id,
-            message=REWRITE_INSTRUCTION,
-            approval_mode="ask_every_time",
-            model_tier=model_tier,
-            thinking_depth=thinking_depth,
+    if result.proposals:
+        decide(
+            inspection,
+            result,
+            client,
+            approvals={p.diff.change_id: p.verdict.clean for p in result.proposals},
         )
-        job = _poll(client, job_id)
-        if job.usage:
-            result.ops_charged += job.usage.ops_charged
-            result.ops_remaining = job.usage.ops_remaining()
-
-        # "Asked for N changes and got zero" is a failure, not an answer — a job can finish
-        # with no error and propose nothing, which silently drops every rewrite.
-        if not job.chunk_diffs:
-            _log.warning("no_proposals", extra={"job_id": job_id})
-
-        for diff in job.chunk_diffs:
-            verdict = rail.check(_text_of(diff.new_html))
-            result.proposals.append(Proposal(diff=diff, verdict=verdict))
-
-        if job.chunk_diffs:
-            decisions = [
-                ApprovalDecision(
-                    change_id=p.diff.change_id,
-                    approved=not p.refused_by_rail,
-                    feedback=""
-                    if p.verdict.clean
-                    else f"Refused by the observational-language rail: {p.verdict.summary()}",
-                )
-                for p in result.proposals
-            ]
-            for p, d in zip(result.proposals, decisions, strict=True):
-                p.approved = d.approved
-            # One call per job: approving closes it, so every decision goes together.
-            client.approve(session_id=session_id, decisions=decisions, job_id=job_id)
-            inspection.stage = ReportStage.APPROVED
-
-        _apply_to_findings(inspection, result.proposals)
 
     name = _slug(inspection)
     expected = [_text_of(p.diff.new_html)[:60] for p in result.proposals if p.approved]

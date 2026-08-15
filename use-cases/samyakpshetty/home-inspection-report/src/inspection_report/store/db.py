@@ -385,3 +385,41 @@ def photo_bytes(
         return None
     mime = "image/jpeg" if thumbnail else row["content_type"]
     return bytes(row["data"]), mime
+
+
+def photo_data_for(
+    conn: psycopg.Connection[dict[str, Any]], inspection_id: UUID
+) -> dict[str, bytes]:
+    """Every photograph's cleaned bytes for one inspection, keyed by filename.
+
+    Keyed by filename because that is what the render pipeline asks for; identity for
+    upload purposes is still the content hash.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT p.filename, p.bytes FROM photos p
+            JOIN findings f ON f.id = p.finding_id
+            WHERE f.inspection_id = %s
+            """,
+            (inspection_id,),
+        )
+        return {r["filename"]: bytes(r["bytes"]) for r in cur.fetchall()}
+
+
+def load_proposals(
+    conn: psycopg.Connection[dict[str, Any]], inspection_id: UUID
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM proposals WHERE inspection_id = %s ORDER BY created_at",
+            (inspection_id,),
+        )
+        return list(cur.fetchall())
+
+
+def clear_proposals(conn: psycopg.Connection[dict[str, Any]], inspection_id: UUID) -> None:
+    """A fresh proposal round replaces the last one; stale cards must not linger at a gate."""
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM proposals WHERE inspection_id = %s", (inspection_id,))
+    conn.commit()

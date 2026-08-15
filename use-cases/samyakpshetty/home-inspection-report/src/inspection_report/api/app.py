@@ -12,6 +12,7 @@ home. The browser gets `/api/photos/{id}` instead.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from inspection_report.domain import catalogue
-from inspection_report.domain.models import Finding, Inspection, Inspector, Property
+from inspection_report.domain.models import (
+    Finding,
+    Inspection,
+    Inspector,
+    Property,
+    ReportStage,
+)
 from inspection_report.logging import get_logger, setup_logging
 from inspection_report.photos.pipeline import PhotoRejected, clean
 from inspection_report.phrasing import rail
@@ -297,3 +304,302 @@ def _serialise(inspection: Inspection) -> dict[str, Any]:
             for f in inspection.findings
         ],
     }
+
+
+# --------------------------------------------------------- building the report
+#
+# The gate is three calls, not one, because a person holds it. `prepare` goes as far as the
+# proposals and stops; `decisions` relays what the person decided; `export` produces the
+# files and verifies them. Nothing holds a connection open waiting for a human.
+
+
+# The fake stands in for a service that remembers sessions between requests, so it has to
+# remember them too: one instance for the life of the process. A fresh one per request would
+# lose the session between preparing a report and deciding on it — and would quietly make the
+# offline application behave unlike the live one, which is the whole thing the fake exists to
+# avoid. The live client is per-request because its state lives server-side.
+_FAKE: Any = None
+
+
+def _client() -> Any:
+    global _FAKE
+    from inspection_report.superdocs.fake import FakeSuperDocsClient
+    from inspection_report.superdocs.live import LiveSuperDocsClient
+
+    if os.environ.get("PROVIDER", "fake").lower() == "live":
+        return LiveSuperDocsClient(api_key=os.environ.get("SUPERDOCS_API_KEY", ""))
+    if _FAKE is None:
+        _FAKE = FakeSuperDocsClient()
+    return _FAKE
+
+
+def _release(client: Any) -> None:
+    """Close a live client; leave the shared fake open for the next request."""
+    if client is not _FAKE:
+        client.close()
+
+
+def _session_id(inspection_id: UUID) -> str:
+    """Derived, not stored: the same inspection always resumes the same session."""
+    return f"inspection-{inspection_id.hex[:12]}"
+
+
+def _template_html(key: str) -> str:
+    path = TEMPLATE_DIR / f"{key}.html"
+    if not path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown report format {key!r}. "
+            f"Available: {sorted(p.stem for p in TEMPLATE_DIR.glob('*.html'))}",
+        )
+    return path.read_text()
+
+
+def _load(conn: Any, inspection_id: UUID) -> Inspection:
+    inspection = db.load_inspection(conn, inspection_id)
+    if inspection is None:
+        raise HTTPException(status_code=404, detail="no inspection with that id")
+    return inspection
+
+
+@app.post("/api/inspections/{inspection_id}/prepare")
+def prepare_report(
+    inspection_id: UUID,
+    model_tier: str = "core",
+    conn: Any = Depends(get_conn),
+) -> dict[str, Any]:
+    """Render, upload, and ask for the rewrites. Stops at the gate."""
+    from inspection_report.render import pipeline
+
+    inspection = _load(conn, inspection_id)
+    if not inspection.findings:
+        raise HTTPException(
+            status_code=400,
+            detail="this inspection has no findings yet. Record at least one before "
+            "preparing the report.",
+        )
+
+    client = _client()
+    try:
+        result = pipeline.prepare(
+            inspection,
+            _template_html(inspection.template_key),
+            db.photo_data_for(conn, inspection_id),
+            client,
+            session_id=_session_id(inspection_id),
+            known_uploads=db.known_uploads(conn),
+            model_tier=model_tier,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"SuperDocs: {exc}") from exc
+    finally:
+        _release(client)
+
+    for finding in inspection.findings:
+        for photo in finding.photos:
+            if photo.remote_url:
+                db.remember_upload(conn, sha256=photo.sha256, remote_url=photo.remote_url)
+
+    db.clear_proposals(conn, inspection_id)
+    db.record_proposals(
+        conn,
+        inspection_id=inspection_id,
+        rows=[_proposal_row(result, p) for p in result.proposals],
+    )
+    db.save_inspection(conn, inspection)
+    return _proposals_payload(result)
+
+
+@app.get("/api/inspections/{inspection_id}/proposals")
+def get_proposals(inspection_id: UUID, conn: Any = Depends(get_conn)) -> dict[str, Any]:
+    """Whatever is currently at the gate.
+
+    The interface needs this on load: a review is held open for as long as the person takes,
+    and a refreshed browser must find the same queue rather than an empty screen.
+    """
+    rows = db.load_proposals(conn, inspection_id)
+    return {
+        "job_id": rows[0]["job_id"] if rows else "",
+        "proposals": [
+            {
+                "change_id": r["change_id"],
+                "before": r["old_text"],
+                "after": r["new_text"],
+                "rail_clean": r["rail_clean"],
+                "breaches": r["rail_breaches"],
+                "decision": r["decision"],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/api/inspections/{inspection_id}/decisions")
+def submit_decisions(
+    inspection_id: UUID, body: dict[str, bool], conn: Any = Depends(get_conn)
+) -> dict[str, Any]:
+    """Relay the person's decisions. One call per job, so every change is decided together."""
+    from inspection_report.phrasing import rail as rail_mod
+    from inspection_report.render import pipeline
+    from inspection_report.superdocs.models import ChunkDiff
+
+    inspection = _load(conn, inspection_id)
+    rows = db.load_proposals(conn, inspection_id)
+    if not rows:
+        raise HTTPException(
+            status_code=400, detail="nothing is awaiting a decision. Prepare the report first."
+        )
+
+    result = pipeline.PipelineResult(
+        session_id=_session_id(inspection_id),
+        document_html="",
+        job_id=rows[0]["job_id"],
+        proposals=[
+            pipeline.Proposal(
+                diff=ChunkDiff(
+                    change_id=r["change_id"], old_html=r["old_text"], new_html=r["new_text"]
+                ),
+                verdict=rail_mod.check(r["new_text"]),
+            )
+            for r in rows
+        ],
+    )
+
+    client = _client()
+    try:
+        pipeline.decide(inspection, result, client, approvals=body)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"SuperDocs: {exc}") from exc
+    finally:
+        _release(client)
+
+    db.record_proposals(
+        conn,
+        inspection_id=inspection_id,
+        rows=[_proposal_row(result, p) for p in result.proposals],
+    )
+    db.save_inspection(conn, inspection)
+    return _proposals_payload(result)
+
+
+@app.post("/api/inspections/{inspection_id}/export")
+def export_report(inspection_id: UUID, fmt: str = "pdf", conn: Any = Depends(get_conn)) -> Response:
+    """Export, then read the finished file back and report what it actually contains."""
+    from inspection_report.render import pipeline
+    from inspection_report.templates import binding
+    from inspection_report.verify import exports as verify_exports
+
+    if fmt not in ("pdf", "docx"):
+        raise HTTPException(status_code=400, detail="format must be pdf or docx")
+    inspection = _load(conn, inspection_id)
+    template = _template_html(inspection.template_key)
+
+    client = _client()
+    try:
+        approved = [
+            r["new_text"][:60]
+            for r in db.load_proposals(conn, inspection_id)
+            if r["decision"] == "approved"
+        ]
+        export = pipeline._export_when_current(
+            client,
+            session_id=_session_id(inspection_id),
+            fmt=fmt,
+            filename=_export_name(inspection),
+            expected=approved,
+            settle_s=pipeline.SETTLE_AFTER_APPROVE_S
+            if os.environ.get("PROVIDER", "fake").lower() == "live"
+            else 0.0,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"SuperDocs: {exc}") from exc
+    finally:
+        _release(client)
+
+    card = verify_exports.verify(
+        data=export.content,
+        fmt=fmt,
+        inspection=inspection,
+        expect_photos=binding.declares_region(template, "photo"),
+    )
+    inspection.stage = ReportStage.EXPORTED
+    db.save_inspection(conn, inspection)
+
+    # The verification travels with the file rather than in a separate call, so a client
+    # cannot hand someone the document without also having been told what is in it.
+    return Response(
+        content=export.content,
+        media_type=export.content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{export.filename}"',
+            "X-Report-Verified": "pass" if card.passed else "fail",
+            "X-Report-Checks": json.dumps(
+                [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in card.checks]
+            ),
+        },
+    )
+
+
+def _export_name(inspection: Inspection) -> str:
+    raw = f"{inspection.property.address_line}-{inspection.inspected_on:%Y-%m-%d}"
+    return "".join(c if c.isalnum() else "-" for c in raw.lower()).strip("-")
+
+
+def _proposal_row(result: Any, proposal: Any) -> dict[str, Any]:
+    from uuid import uuid4
+
+    return {
+        "id": uuid4(),
+        "finding_id": None,
+        "job_id": result.job_id,
+        "change_id": proposal.diff.change_id,
+        "old_text": _strip(proposal.diff.old_html),
+        "new_text": _strip(proposal.diff.new_html),
+        "rail_clean": proposal.verdict.clean,
+        "rail_breaches": [
+            {"matched": b.matched, "category": b.category, "why": b.why, "suggest": b.suggest}
+            for b in proposal.verdict.breaches
+        ],
+        "decision": ("approved" if proposal.approved else "rejected")
+        if proposal.decided
+        else "pending",
+        "decided_at": None,
+    }
+
+
+def _proposals_payload(result: Any) -> dict[str, Any]:
+    return {
+        "session_id": result.session_id,
+        "job_id": result.job_id,
+        "photos_uploaded": result.photos_uploaded,
+        "photos_reused": result.photos_reused,
+        "ops_charged": result.ops_charged,
+        "ops_remaining": result.ops_remaining,
+        "proposals": [
+            {
+                "change_id": p.diff.change_id,
+                "before": _strip(p.diff.old_html),
+                "after": _strip(p.diff.new_html),
+                "rail_clean": p.verdict.clean,
+                "rail_summary": p.verdict.summary(),
+                "approved": p.approved,
+                "decided": p.decided,
+                "breaches": [
+                    {
+                        "matched": b.matched,
+                        "category": b.category,
+                        "why": b.why,
+                        "suggest": b.suggest,
+                    }
+                    for b in p.verdict.breaches
+                ],
+            }
+            for p in result.proposals
+        ],
+    }
+
+
+def _strip(html: str) -> str:
+    import re
+
+    return re.sub(r"<[^>]+>", "", html).strip()
