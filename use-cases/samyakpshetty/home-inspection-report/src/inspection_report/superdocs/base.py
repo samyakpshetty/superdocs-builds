@@ -156,6 +156,10 @@ class SuperDocsClient(Protocol):
 
     def delete_template(self, template_id: str) -> None: ...
 
+    def ops_remaining(self) -> int | None:
+        """Operations left, read without spending one. ``None`` when there is no budget."""
+        ...
+
     # --- operational ---------------------------------------------------------------
     def continue_job(self, *, session_id: str, job_id: str, keep_going: bool) -> None:
         """Answer a large edit that paused and asked whether to carry on."""

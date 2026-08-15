@@ -149,8 +149,11 @@ reported to SuperDocs.
 - **`approve` keys on `change_id`, not `chunk_id`,** and closes the job it is called on, so a
   job's decisions are collected and sent once.
 - **`/v1/users/me/usage` and `/limits` reject API keys** with a 401 saying they need a signed-in
-  user session. `whoami` reports the subscription quota and omits the promotional bucket
-  entirely. The only honest meter is `result.usage` on a chat job.
+  user session — while being published under the same bearer scheme as everything else.
+  **`GET /v1/users/me/promotions` does accept an API key** and reports the promo bucket's
+  `ops_remaining`, so a balance costs nothing to read. An earlier version of these notes
+  claimed you had to spend an operation to find out; that was wrong, and it was wrong because
+  I had not tried `promotions`.
 - **`session_id` on the templates upload does nothing.** The shared request schema documents
   it as loading the template into a session; exporting that session returns "No document
   loaded in this session."

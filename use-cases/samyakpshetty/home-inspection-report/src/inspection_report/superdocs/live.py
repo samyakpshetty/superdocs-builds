@@ -237,6 +237,26 @@ class LiveSuperDocsClient:
         ).json()
         return TemplateRef.model_validate(payload)
 
+    def ops_remaining(self) -> int | None:
+        """Operations left on the promotional bucket, without spending one to find out.
+
+        `/v1/users/me/usage` and `/limits` reject API keys outright, which is misleading —
+        they are published under the same bearer scheme as everything else. `promotions`
+        accepts the key and carries the real numbers, so a build can check its own budget
+        before starting a run rather than discovering it mid-report. Returns ``None`` if no
+        promotional bucket is active, which is not an error.
+        """
+        try:
+            payload = self._request("GET", "/v1/users/me/promotions").json()
+        except SuperDocsError as exc:
+            _log.info("ops_remaining_unavailable", extra={"error": str(exc)[:120]})
+            return None
+        for promo in payload.get("active") or []:
+            remaining = promo.get("ops_remaining")
+            if isinstance(remaining, int):
+                return remaining
+        return None
+
     def list_templates(self) -> list[TemplateRef]:
         payload = self._request("GET", "/v1/templates").json()
         return [TemplateRef.model_validate(t) for t in payload.get("templates", [])]

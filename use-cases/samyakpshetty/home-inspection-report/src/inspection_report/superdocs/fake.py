@@ -403,6 +403,10 @@ class FakeSuperDocsClient:
         self.template_bytes[tid] = data
         return ref
 
+    def ops_remaining(self) -> int | None:
+        """The offline budget, mirroring the live promotional bucket."""
+        return max(0, self.ops_budget - self.ops_charged)
+
     def list_templates(self) -> list[TemplateRef]:
         return sorted(self.templates.values(), key=lambda t: t.name)
 

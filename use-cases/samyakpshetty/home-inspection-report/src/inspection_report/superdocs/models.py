@@ -79,13 +79,14 @@ class ChunkDiff(BaseModel):
     ``change_id`` is what ``approve`` keys on. Approving by ``chunk_id`` returns a 500 — this
     was established against the live API and contradicts the published documentation.
 
-    Not every edit is a replacement. A **deletion** arrives with ``new_html: null`` and an
-    **insertion** with ``old_html: null``, so the side that does not exist is absent rather
-    than empty. Declaring these as plain ``str`` made the whole job unparseable the first time
-    the AI was asked to remove a section: one null field, and a completed job that had already
-    been paid for could not be read. Null is normalised to the empty string here, in one
-    place, so nothing downstream has to know — and ``operation`` still says which kind of
-    edit it is.
+    Not every edit is a replacement. ``operation`` is ``'edit' | 'create' | 'delete'``, and
+    the side that does not exist arrives as ``null`` — a deletion has no ``new_html``, an
+    insertion has no ``old_html``. **The API documents this correctly**
+    (``anyOf: [string, null]`` on both, and on ``chunk_id``); I typed them as plain ``str``
+    and the first request that asked for a section to be *removed* made the whole job
+    unparseable, after it had already been charged for. My bug, from not reading the schema.
+    Null is normalised to the empty string here, in one place, so nothing downstream has to
+    care, and ``operation`` still says which kind of edit it is.
     """
 
     model_config = {"extra": "ignore"}
@@ -121,9 +122,10 @@ class ChunkDiff(BaseModel):
 class Usage(BaseModel):
     """What a request actually cost, and what is left.
 
-    This is the only reliable meter: ``/v1/users/me/usage`` rejects API keys outright, and
-    ``whoami`` reports the subscription quota while omitting the promotional bucket
-    entirely. The true remaining balance rides back on every chat job.
+    What a job cost rides back on the job itself. The *balance* is a separate question and
+    has a free answer: ``GET /v1/users/me/promotions`` accepts an API key and reports the
+    promo bucket's ``ops_remaining``. (``/v1/users/me/usage`` and ``/limits`` reject API keys
+    outright, which is what sent me looking in the wrong place first.)
     """
 
     model_config = {"extra": "ignore"}

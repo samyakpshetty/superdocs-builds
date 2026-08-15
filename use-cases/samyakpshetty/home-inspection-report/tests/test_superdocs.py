@@ -133,7 +133,7 @@ class TestParsingTheDocumentedTraps:
         assert not diffs[0].is_deletion
 
     def test_usage_prefers_the_promotional_bucket(self) -> None:
-        """whoami reports the subscription quota and omits the promo entirely."""
+        """A job reports its own cost against the promo bucket when one is active."""
         usage = base.parse_usage(
             {
                 "result": {
