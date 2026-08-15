@@ -1,20 +1,29 @@
 """Report formats are registered with SuperDocs and the report is built from what it returns.
 
 The point of these tests is to make "we use the templates surface" falsifiable. The strongest
-one is the last: delete the format from the account and the round trip stops working. A
-surface that is really load-bearing breaks when you take it away.
+one is in ``TestDegradation``: delete the format from the account and the round trip stops
+working. A surface that is really load-bearing breaks when you take it away.
+
+This is where the build changed shape. Formats used to be HTML marked up with
+``<!-- region:system -->`` comments, and the round trip could never complete, because upload
+parses a document into chunks and drops HTML comments — so the markers the binder needed were
+gone by the time the document came back. Formats are Word documents now, marked with
+bracketed tokens a person types, and those survive. The tests that recorded the old failure
+have been replaced by tests that the round trip actually happens.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from inspection_report import sample
+from inspection_report.domain import catalogue
 from inspection_report.render import report as render_report
 from inspection_report.superdocs.fake import FakeSuperDocsClient
-from inspection_report.templates import registry
+from inspection_report.templates import binding, registry
 
 TEMPLATE_DIR = Path("templates")
 
@@ -24,10 +33,29 @@ def client() -> FakeSuperDocsClient:
     return FakeSuperDocsClient()
 
 
+def _minimal_format(marker: str) -> Any:
+    """The smallest thing that is still a readable format: a worked example and six sections."""
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph(f"[firm name] {marker}")
+    doc.add_paragraph("[property address] — [inspector] — [date of inspection]")
+    doc.add_heading("How each finding is recorded", level=1)
+    doc.add_paragraph("[severity label]: [location]")
+    doc.add_paragraph("[observation]")
+    doc.add_paragraph("[recommendation]")
+    doc.add_heading("What was inspected", level=1)
+    doc.add_paragraph("[systems inspected]")
+    for system in catalogue.systems():
+        doc.add_heading(system.name, level=1)
+        doc.add_paragraph("[findings]")
+    return doc
+
+
 class TestRegistration:
     def test_every_shipped_format_is_registered(self, client: FakeSuperDocsClient) -> None:
         formats = registry.ensure_registered(client, TEMPLATE_DIR)
-        assert set(formats) == {p.stem for p in TEMPLATE_DIR.glob("*.html")}
+        assert set(formats) == {p.stem for p in TEMPLATE_DIR.glob("*.docx")}
         assert len(client.list_templates()) == len(formats)
 
     def test_registering_twice_uploads_nothing_new(self, client: FakeSuperDocsClient) -> None:
@@ -43,11 +71,11 @@ class TestRegistration:
         """A changed format must not redefine the one existing reports were built from."""
         d = tmp_path / "templates"
         d.mkdir()
-        target = d / "house.html"
-        target.write_text(_minimal_format("v1"))
+        target = d / "house.docx"
+        _minimal_format("v1").save(str(target))
         first = registry.ensure_registered(client, d)["house"]
 
-        target.write_text(_minimal_format("v2"))
+        _minimal_format("v2").save(str(target))
         second = registry.ensure_registered(client, d)["house"]
 
         assert first.content_sha != second.content_sha
@@ -55,42 +83,34 @@ class TestRegistration:
         assert len(client.list_templates()) == 2, "the earlier version must still exist"
 
 
-class TestTheRoundTripIsRefusedForANamedReason:
-    """SuperDocs strips HTML comments, and this build's region markers are HTML comments.
+class TestTheRoundTripActuallyHappens:
+    """The format really does come back from SuperDocs, and the report is built on it.
 
-    Verified against the live API: four comments sent, none returned, while `class` and
-    `{{placeholder}}` both survive. So a template registered today comes back without the
-    markers the binding engine needs, and the round trip cannot complete.
-
-    That is recorded here rather than hidden, and the code refuses the returned document
-    instead of building a report on a skeleton it cannot group. Making the round trip work
-    means moving the region markers onto `class` attributes, which survive — a change to the
-    binding engine and the three shipped formats, noted in PROGRESS.
+    A `.docx` format survives registration and loading with its structure intact — measured
+    against the live service, and mirrored here by the fake. That is what makes the templates
+    surface load-bearing rather than called once so it can be mentioned.
     """
 
-    def test_comments_do_not_survive_a_round_trip(self, client: FakeSuperDocsClient) -> None:
-        formats = registry.ensure_registered(client, TEMPLATE_DIR)
-        html, from_service = registry.materialise(client, formats["buyer_summary"], session_id="s1")
-        assert "<!-- region:system -->" not in html or from_service is False
-
-    def test_the_document_is_refused_rather_than_built_on(
-        self, client: FakeSuperDocsClient
-    ) -> None:
-        """The failure mode that matters: never silently produce an ungrouped report."""
+    def test_the_format_comes_back_from_the_service(self, client: FakeSuperDocsClient) -> None:
         formats = registry.ensure_registered(client, TEMPLATE_DIR)
         _, from_service = registry.materialise(client, formats["buyer_summary"], session_id="s1")
-        assert from_service is False, (
-            "the round trip claimed success even though the region markers cannot survive it"
-        )
+        assert from_service is True, "the report was not built from what SuperDocs returned"
 
-    def test_the_caller_is_told_which_path_produced_the_document(
-        self, client: FakeSuperDocsClient
-    ) -> None:
-        """A build that fell back must say so; that flag is what keeps the README honest."""
+    def test_what_comes_back_is_readable_as_a_format(self, client: FakeSuperDocsClient) -> None:
         formats = registry.ensure_registered(client, TEMPLATE_DIR)
-        html, from_service = registry.materialise(client, formats["buyer_summary"], session_id="s1")
-        assert from_service is False
-        assert html == formats["buyer_summary"].local_html
+        html, _ = registry.materialise(client, formats["buyer_summary"], session_id="s1")
+        fmt = binding.read_format(html, [s.name for s in catalogue.systems()])
+        assert len(fmt.system_slots) == len(catalogue.systems())
+        assert fmt.finding_shape.carries_photos
+
+    def test_the_standing_text_survives_the_round_trip(self, client: FakeSuperDocsClient) -> None:
+        """The firm's own wording is the reason for having a format at all."""
+        from inspection_report.templates import authoring
+
+        formats = registry.ensure_registered(client, TEMPLATE_DIR)
+        html, _ = registry.materialise(client, formats["buyer_summary"], session_id="s1")
+        assert authoring.PREAMBLE[:60] in html
+        assert authoring.LIMITS[:60] in html
 
     def test_a_report_renders_from_the_returned_skeleton(self, client: FakeSuperDocsClient) -> None:
         formats = registry.ensure_registered(client, TEMPLATE_DIR)
@@ -98,6 +118,30 @@ class TestTheRoundTripIsRefusedForANamedReason:
         report_html = render_report.render(sample.sample_inspection(), html)
         assert "14 Alder Lane" in report_html
         assert "Recommend prompt evaluation" in report_html
+
+    def test_the_worked_example_never_reaches_the_report(self, client: FakeSuperDocsClient) -> None:
+        """It is scaffolding for whoever authors the format, not part of a buyer's report."""
+        from inspection_report.templates import authoring
+
+        formats = registry.ensure_registered(client, TEMPLATE_DIR)
+        html, _ = registry.materialise(client, formats["buyer_summary"], session_id="s1")
+        report_html = render_report.render(sample.sample_inspection(), html)
+        assert authoring.EXAMPLE_HEADING not in report_html
+        assert "[observation]" not in report_html
+
+    def test_the_cache_answers_the_second_time(self, client: FakeSuperDocsClient) -> None:
+        """One operation per format version, not per report."""
+        formats = registry.ensure_registered(client, TEMPLATE_DIR)
+        cache: dict[str, str] = {}
+        first, first_from_service = registry.materialise(
+            client, formats["buyer_summary"], session_id="s1", cache=cache
+        )
+        second, second_from_service = registry.materialise(
+            client, formats["buyer_summary"], session_id="s2", cache=cache
+        )
+        assert first_from_service is True
+        assert second_from_service is False, "the second report paid for the format again"
+        assert first == second
 
 
 class TestDegradation:
@@ -116,31 +160,24 @@ class TestDegradation:
 
         html, from_service = registry.materialise(client, fmt, session_id="s1")
         assert from_service is False
-        assert "<!-- region:system -->" in html, "the local copy still renders a report"
+        # The local copy is still a whole format, so the report is complete — only its
+        # provenance differs, and the caller is told.
+        report_html = render_report.render(sample.sample_inspection(), html)
+        assert "14 Alder Lane" in report_html
 
     def test_a_document_that_is_not_the_format_is_refused(
         self, client: FakeSuperDocsClient, tmp_path: Path
     ) -> None:
-        """A skeleton without the regions cannot group a report, so it is not accepted."""
+        """A skeleton that cannot group a report is not accepted as one."""
+        from docx import Document
+
         d = tmp_path / "t"
         d.mkdir()
-        (d / "broken.html").write_text("<h1>Not a report format at all</h1>")
+        doc = Document()
+        doc.add_heading("Not a report format at all", level=1)
+        doc.add_paragraph("Just some prose.")
+        doc.save(str(d / "broken.docx"))
+
         fmt = registry.ensure_registered(client, d)["broken"]
         _, from_service = registry.materialise(client, fmt, session_id="s1")
         assert from_service is False, "an unusable skeleton was accepted as the format"
-
-
-def _minimal_format(marker: str) -> str:
-    return (
-        f"<h1>{{{{firm_name}}}} {marker}</h1>"
-        "<!-- region:legend --><p>{{severity_label}} {{severity_description}}</p>"
-        "<!-- /region:legend -->"
-        "<!-- region:system --><h2>{{system_name}}</h2><p>{{system_blurb}}</p>"
-        "<p>{{system_summary}}</p>"
-        "<!-- region:finding --><h3>{{severity_label}} {{finding_title}}</h3>"
-        '<p class="finding-note">{{finding_text}}</p><p>{{finding_recommendation}}</p>'
-        "<!-- /region:finding -->"
-        "<!-- /region:system -->"
-        "<p>{{property_address}} {{inspector_name}}{{licence_suffix}} {{inspected_on}} "
-        "{{preamble}} {{limits}} {{systems_inspected}}</p>"
-    )

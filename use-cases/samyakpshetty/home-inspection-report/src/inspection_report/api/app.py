@@ -34,6 +34,7 @@ from inspection_report.logging import get_logger, setup_logging
 from inspection_report.photos.pipeline import PhotoRejected, clean
 from inspection_report.phrasing import rail
 from inspection_report.store import db
+from inspection_report.templates import docx_html
 
 _log = get_logger("inspection_report.api")
 
@@ -135,7 +136,7 @@ def get_catalogue() -> dict[str, Any]:
         "systems": [s.model_dump() for s in catalogue.systems()],
         "severities": [s.model_dump() for s in catalogue.severities()],
         "rail_rules": rail.describe_rules(),
-        "formats": sorted(p.stem for p in TEMPLATE_DIR.glob("*.html")),
+        "formats": sorted(p.stem for p in TEMPLATE_DIR.glob("*.docx")),
     }
 
 
@@ -151,11 +152,11 @@ def list_inspections(conn: Any = Depends(get_conn)) -> list[dict[str, Any]]:
 def create_inspection(body: InspectionIn, conn: Any = Depends(get_conn)) -> dict[str, str]:
     import datetime as dt
 
-    if body.template_key not in {p.stem for p in TEMPLATE_DIR.glob("*.html")}:
+    if body.template_key not in {p.stem for p in TEMPLATE_DIR.glob("*.docx")}:
         raise HTTPException(
             status_code=400,
             detail=f"unknown report format {body.template_key!r}. "
-            f"Available: {sorted(p.stem for p in TEMPLATE_DIR.glob('*.html'))}",
+            f"Available: {sorted(p.stem for p in TEMPLATE_DIR.glob('*.docx'))}",
         )
     inspection = Inspection(
         property=Property(**body.property.model_dump()),
@@ -345,14 +346,20 @@ def _session_id(inspection_id: UUID) -> str:
 
 
 def _template_html(key: str) -> str:
-    path = TEMPLATE_DIR / f"{key}.html"
+    """The local copy of a format, converted the way SuperDocs converts it.
+
+    Formats are Word documents, so this is a conversion rather than a read. It is the
+    fallback path: the report is normally built from the document SuperDocs hands back when
+    the registered format is loaded.
+    """
+    path = TEMPLATE_DIR / f"{key}.docx"
     if not path.exists():
         raise HTTPException(
             status_code=400,
             detail=f"unknown report format {key!r}. "
-            f"Available: {sorted(p.stem for p in TEMPLATE_DIR.glob('*.html'))}",
+            f"Available: {sorted(p.stem for p in TEMPLATE_DIR.glob('*.docx'))}",
         )
-    return path.read_text()
+    return docx_html.from_path(path)
 
 
 def _load(conn: Any, inspection_id: UUID) -> Inspection:
@@ -520,7 +527,7 @@ def export_report(inspection_id: UUID, fmt: str = "pdf", conn: Any = Depends(get
         data=export.content,
         fmt=fmt,
         inspection=inspection,
-        expect_photos=binding.declares_region(template, "photo"),
+        expect_photos=binding.carries_photos(template, [s.name for s in catalogue.systems()]),
     )
     inspection.stage = ReportStage.EXPORTED
     db.save_inspection(conn, inspection)

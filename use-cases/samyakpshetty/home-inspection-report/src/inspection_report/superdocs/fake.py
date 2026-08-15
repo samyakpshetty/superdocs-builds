@@ -213,8 +213,18 @@ class FakeSuperDocsClient:
             raise SuperDocsError(
                 f"no saved template matching {name!r}. Register the format before asking for it."
             )
-        # Served the way the live service serves it: parsed, which means comments are gone.
-        html = _HTML_COMMENT.sub("", self.template_bytes[match.id].decode("utf-8"))
+        # Served the way the live service serves it. A format is a Word document, so this is
+        # a conversion — and the live service returns the document exactly as saved, which
+        # was measured on a real round trip rather than assumed. Comments are stripped for
+        # the case where a caller registers HTML: the parser drops them, and a fake that kept
+        # them would let a format work offline and fail live.
+        raw = self.template_bytes[match.id]
+        if raw[:2] == b"PK":
+            from inspection_report.templates import docx_html
+
+            html = docx_html.from_bytes(raw)
+        else:
+            html = _HTML_COMMENT.sub("", raw.decode("utf-8"))
         self.ops_charged += 1
         job_id = self._next("job")
         self.sessions.setdefault(session_id, _Session()).html = html

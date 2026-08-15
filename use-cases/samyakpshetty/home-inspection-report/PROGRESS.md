@@ -9,20 +9,44 @@ what it does; this says why it is shaped that way.
 
 I researched the templates surface before designing around it, and found there is no endpoint
 that applies a saved template to a document. Templates are *AI-referenced*: you register one,
-and the AI can search for it and use it as a starting point when drafting. I confirmed this
-works — I registered a report format with three sentinel strings in it and asked the AI to
-draft from it by name, and all three came back in the drafted document.
+and the AI loads it into a session when you ask for it by name. I confirmed this works — I
+registered a report format with three sentinel strings in it and asked the AI to draft from
+it by name, and all three came back in the drafted document.
 
 That settled the architecture. If the AI owns structure, then "grouped correctly by system" —
 the one thing the brief asks me to confirm — becomes something I hope for. So the report is
 rendered deterministically from typed data, and the model is given the job it is actually
-reliable at: turning field shorthand into sentences a first-time buyer can read.
+reliable at: turning field shorthand into sentences a first-time buyer can read. That was a
+judgement at first. It is now a measured result — see the experiment below.
 
-**We author the report formats.** The brief's premise is that inspection reports are not
-formatted for someone who has never read one. A builder that asks a firm to upload its
-existing report and binds data into it would faithfully reproduce that problem, and a builder
-that requires you to supply the format is a mail-merge engine. So the formats ship with the
-product, and a firm chooses among them.
+**A report format is a Word document.** Not HTML with markers in it. This build exists
+because inspection reports are not written for the person reading them, and a format nobody
+can open is a format nobody will redesign. So `templates/` holds `.docx` files: letterhead,
+the severity legend, the standing preamble, a section per inspection system, the limitations
+clause. A firm opens one in Word, changes it, and drops it back in.
+
+The markers are things a person types, not markup: bracketed tokens like `[findings]`,
+`[severity label]`, `[observation]`, `[photograph]`. That is not a stylistic choice. The
+earlier design marked regions with `<!-- region:system -->`, and **upload strips HTML
+comments** — verified, four sent and none returned, in the same request where `class`
+attributes survived. A format marked up that way could never come back from the service with
+the markers the binder needed, so the templates surface was registered-and-verified rather
+than load-bearing. Bracketed text is not markup, so nothing strips it, and the round trip now
+completes: the format registers, comes back exactly as saved, and the report is built on what
+came back. Delete it from the account and no report can be produced.
+
+**A format also owns how a finding looks.** It carries one worked example — the severity
+label and location, what was observed, the recommended next step, the photograph and its
+caption — and the binder reads that example *as the per-finding template*, then removes the
+section from the finished report. So a firm changes the layout of every finding by editing
+one example in Word. What this build still owns is which system a finding goes under and in
+what order; the format owns everything about how it reads.
+
+**We ship the formats.** The brief's premise is that inspection reports are not formatted for
+someone who has never read one. A builder that asks a firm to upload its existing report and
+binds data into it would faithfully reproduce that problem, and a builder that requires you
+to supply the format is a mail-merge engine. So three formats ship with the product, a firm
+chooses among them, and — because they are Word documents — can then make them their own.
 
 **The language rail is code, not a prompt.** The brief states the language requirement rather
 than suggesting it, and a prompt is a request. It is also not hypothetical: on the first live
@@ -130,6 +154,15 @@ reported to SuperDocs.
 - **`session_id` on the templates upload does nothing.** The shared request schema documents
   it as loading the template into a session; exporting that session returns "No document
   loaded in this session."
+- **HTML comments do not survive an upload.** The parser drops them. Four sent, none
+  returned, in the same request where `class` and `{{placeholder}}` both survived. This
+  invalidated the first format design and is why formats are Word documents with bracketed
+  tokens now.
+- **A delete-type change carries `new_html: null`.** Not every proposed edit is a
+  replacement, and typing the field as a string made a whole job — already charged for —
+  unparseable. Normalised in one place, with `operation` still naming the kind of edit.
+- **A whole-document authoring request applies nothing**, and replies asking for the data it
+  was given. Narrow edits are surgical; see the experiment above.
 
 ## Things I got wrong, and what fixed them
 

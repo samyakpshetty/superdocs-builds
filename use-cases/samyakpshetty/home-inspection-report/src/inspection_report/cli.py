@@ -14,6 +14,7 @@ from pathlib import Path
 import click
 
 from inspection_report import sample
+from inspection_report.domain import catalogue
 from inspection_report.logging import get_logger, setup_logging
 from inspection_report.render import pipeline
 from inspection_report.superdocs.base import SuperDocsClient
@@ -54,9 +55,9 @@ def demo(template: str, polish: bool, model_tier: str) -> None:
     """Build the sample report end to end and verify the exported files."""
     inspection = sample.sample_inspection()
     photo_data = sample.sample_photo_data()
-    template_path = TEMPLATE_DIR / f"{template}.html"
+    template_path = TEMPLATE_DIR / f"{template}.docx"
     if not template_path.exists():
-        available = sorted(p.stem for p in TEMPLATE_DIR.glob("*.html"))
+        available = sorted(p.stem for p in TEMPLATE_DIR.glob("*.docx"))
         raise click.ClickException(
             f"no report format called {template!r}. Available: {available}. "
             f"Formats live in {TEMPLATE_DIR}/."
@@ -111,8 +112,8 @@ def demo(template: str, polish: bool, model_tier: str) -> None:
 
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     # What the report is held to depends on what the format promises: the repair-priority
-    # sheet declares no photo region, so photographs are not expected in it.
-    carries_photos = binding.declares_region(template_html, "photo")
+    # list shows no photograph in its worked example, so photographs are not expected in it.
+    carries_photos = binding.carries_photos(template_html, [s.name for s in catalogue.systems()])
     ok = True
     for fmt, export in result.exports.items():
         path = EXPORT_DIR / export.filename
@@ -160,7 +161,7 @@ def verify(template: str) -> None:
 @main.command()
 def formats() -> None:
     """List the report formats this build ships."""
-    for path in sorted(TEMPLATE_DIR.glob("*.html")):
+    for path in sorted(TEMPLATE_DIR.glob("*.docx")):
         click.echo(f"  {path.stem}")
 
 

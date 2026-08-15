@@ -14,20 +14,30 @@ from inspection_report import sample
 from inspection_report.domain import catalogue
 from inspection_report.render import pipeline, report
 from inspection_report.superdocs.fake import FakeSuperDocsClient
-from inspection_report.templates import binding
+from inspection_report.templates import binding, docx_html
 from inspection_report.verify import exports as verify_exports
 
-TEMPLATE = "templates/buyer_summary.html"
+TEMPLATE = "templates/buyer_summary.docx"
+SYSTEM_NAMES = [s.name for s in catalogue.systems()]
+
+
+def format_html(name: str = "buyer_summary") -> str:
+    """A shipped format, converted the way SuperDocs converts it.
+
+    Formats are Word documents now, so a test reads one the same way the application does
+    when the service is unreachable: through the converter, not off disk as text.
+    """
+    from pathlib import Path
+
+    return docx_html.from_path(Path(f"templates/{name}.docx"))
 
 
 @pytest.fixture
 def built() -> tuple[pipeline.PipelineResult, object]:
-    from pathlib import Path
-
     inspection = sample.sample_inspection()
     result = pipeline.build(
         inspection,
-        Path(TEMPLATE).read_text(),
+        format_html(),
         sample.sample_photo_data(),
         FakeSuperDocsClient(),
         session_id="test-session",
@@ -76,16 +86,14 @@ class TestTheCardsBar:
 class TestEveryShippedFormat:
     """Each format is exercised, not just the one the demo happens to default to.
 
-    They differ on purpose: the repair-priority sheet declares no photo region, so what the
-    verifier holds it to is read from the template rather than assumed.
+    They differ on purpose: the repair-priority list shows no photograph in its worked
+    example, so what the verifier holds it to is read from the format rather than assumed.
     """
 
     @pytest.mark.parametrize("name", ["buyer_summary", "full_technical", "repair_priority"])
     @pytest.mark.parametrize("fmt", ["pdf", "docx"])
     def test_it_renders_exports_and_groups_by_system(self, name: str, fmt: str) -> None:
-        from pathlib import Path
-
-        template = Path(f"templates/{name}.html").read_text()
+        template = format_html(name)
         inspection = sample.sample_inspection()
         result = pipeline.build(
             inspection,
@@ -100,15 +108,13 @@ class TestEveryShippedFormat:
             data=result.exports[fmt].content,
             fmt=fmt,
             inspection=inspection,
-            expect_photos=binding.declares_region(template, "photo"),
+            expect_photos=binding.carries_photos(template, SYSTEM_NAMES),
         )
         assert card.passed, card.render()
 
-    def test_a_format_without_a_photo_region_carries_no_photographs(self) -> None:
-        from pathlib import Path
-
-        template = Path("templates/repair_priority.html").read_text()
-        assert not binding.declares_region(template, "photo")
+    def test_a_format_whose_example_shows_no_photograph_carries_none(self) -> None:
+        template = format_html("repair_priority")
+        assert not binding.carries_photos(template, SYSTEM_NAMES)
         inspection = sample.sample_inspection()
         result = pipeline.build(
             inspection,
@@ -121,11 +127,30 @@ class TestEveryShippedFormat:
         )
         assert verify_exports.images_in_docx(result.exports["docx"].content) == []
 
-    def test_a_template_missing_the_finding_region_says_what_to_fix(self) -> None:
-        broken = "<h1>x</h1><!-- region:system --><h2>{{system_name}}</h2><!-- /region:system -->"
+    def test_a_format_that_never_shows_a_finding_says_what_to_fix(self) -> None:
+        """Without a worked example there is nothing to repeat per finding."""
+        broken = "".join(f"<h1>{name}</h1><p>[findings]</p>" for name in SYSTEM_NAMES)
         with pytest.raises(binding.TemplateError) as exc:
             report.render(sample.sample_inspection(), broken)
-        assert "region:finding" in str(exc.value)
+        assert "never shows how a finding is recorded" in str(exc.value)
+
+    def test_a_format_missing_a_system_names_the_one_it_lacks(self) -> None:
+        """Every catalogue system needs a section: silence reads as "not inspected"."""
+        missing = SYSTEM_NAMES[:-1]
+        broken = "<p>[severity label]: [location]</p><p>[observation]</p>" + "".join(
+            f"<h1>{name}</h1><p>[findings]</p>" for name in missing
+        )
+        with pytest.raises(binding.TemplateError) as exc:
+            report.render(sample.sample_inspection(), broken)
+        assert SYSTEM_NAMES[-1] in str(exc.value)
+
+    def test_a_system_section_with_nowhere_to_put_findings_says_so(self) -> None:
+        broken = "<p>[severity label]: [location]</p><p>[observation]</p>" + "".join(
+            f"<h1>{name}</h1><p>text</p>" for name in SYSTEM_NAMES
+        )
+        with pytest.raises(binding.TemplateError) as exc:
+            report.render(sample.sample_inspection(), broken)
+        assert "[findings]" in str(exc.value)
 
 
 class TestTheRailHoldsAllTheWayToTheFile:
@@ -161,23 +186,19 @@ class TestTheRailHoldsAllTheWayToTheFile:
 class TestDeterminism:
     def test_rendering_twice_gives_identical_bytes(self) -> None:
         """Structure comes from code, so the same inspection always renders the same."""
-        from pathlib import Path
-
-        template = Path(TEMPLATE).read_text()
+        template = format_html()
         a = report.render(sample.sample_inspection(), template)
         b = report.render(sample.sample_inspection(), template)
         assert a == b
 
     def test_findings_are_ordered_most_urgent_first_within_a_system(self) -> None:
         """The Electrical section holds a safety_concern and a monitor, in that order."""
-        from pathlib import Path
-
         inspection = sample.sample_inspection()
-        html = report.render(inspection, Path(TEMPLATE).read_text())
+        html = report.render(inspection, format_html())
         # Anchor on the heading, not the name: every system is also named in the
         # "what was inspected" sentence near the top of the report.
-        start = html.index("<h2>Electrical</h2>")
-        end = html.index("<h2>", start + 1)
+        start = html.index("<h1>Electrical</h1>")
+        end = html.index("<h1>", start + 1)
         section = html[start:end]
         prompt_at = section.find("Recommend prompt evaluation")
         monitor_at = section.find("Monitor:")
@@ -207,11 +228,9 @@ class TestIdempotentPhotoUploads:
 
 def test_a_system_with_no_findings_says_so_rather_than_going_missing() -> None:
     """Silence about a system reads as "not inspected". It has to say what it found."""
-    from pathlib import Path
-
     inspection = sample.sample_inspection()
     inspection.findings = [f for f in inspection.findings if f.system_key == "roof"]
-    html = report.render(inspection, Path(TEMPLATE).read_text())
+    html = report.render(inspection, format_html())
     for system in catalogue.systems():
         assert system.name in html
     assert report.NOTHING_OBSERVED in html
