@@ -22,3 +22,9 @@ frontend/tsconfig.tsbuildinfo
 
 # macOS
 .DS_Store
+
+# Design-skill tooling installed locally, not part of the project
+.agents/
+.claude/
+skills-lock.json
+skills-lock.json

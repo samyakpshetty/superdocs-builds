@@ -60,6 +60,10 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
+# FastAPI's dependency injection is expressed as calls in argument defaults (Depends, File,
+# Query). That is the framework's idiom, not an accident, so it is allowed in the routing
+# layer only rather than silenced line by line.
+"src/inspection_report/api/*" = ["B008"]
 
 # ----------------------------------------------------------------------------
 # mypy — a real gate, strict
