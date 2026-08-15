@@ -1,0 +1,127 @@
+# Engineering notes
+
+The assumption log for this build, and the reasoning behind the calls I made. The README says
+what it does; this says why it is shaped that way.
+
+## The three decisions everything else follows from
+
+**Structure is code, prose is the AI, presentation is the template.**
+
+I researched the templates surface before designing around it, and found there is no endpoint
+that applies a saved template to a document. Templates are *AI-referenced*: you register one,
+and the AI can search for it and use it as a starting point when drafting. I confirmed this
+works — I registered a report format with three sentinel strings in it and asked the AI to
+draft from it by name, and all three came back in the drafted document.
+
+That settled the architecture. If the AI owns structure, then "grouped correctly by system" —
+the one thing the brief asks me to confirm — becomes something I hope for. So the report is
+rendered deterministically from typed data, and the model is given the job it is actually
+reliable at: turning field shorthand into sentences a first-time buyer can read.
+
+**We author the report formats.** The brief's premise is that inspection reports are not
+formatted for someone who has never read one. A builder that asks a firm to upload its
+existing report and binds data into it would faithfully reproduce that problem, and a builder
+that requires you to supply the format is a mail-merge engine. So the formats ship with the
+product, and a firm chooses among them.
+
+**The language rail is code, not a prompt.** The brief states the language requirement rather
+than suggesting it, and a prompt is a request. It is also not hypothetical: on the first live
+drafting sample, asked only to draft a report, the AI produced "recommend replacement **for
+safety**", "older but **operational**", and "**typical for the home's age**" — a safety
+assurance, a functional verdict, and a reassurance no inspector gave. Those three sentences
+are now the regression suite.
+
+## Calls made where the brief or the API was silent
+
+- **The rail governs generated text only, never the inspector's own words.** They are the
+  licensed professional and the report is theirs. What this system may not do is put
+  certification language in their name.
+- **A refused rewrite leaves the original standing** rather than blocking the report. The
+  document loses polish, never content.
+- **Refusing valid work is a failure of equal weight to permitting a bad claim.** A rail that
+  flagged "safety glazing" or "no leaks were observed" would be switched off within a week.
+  So real vocabulary is allow-listed first, and terms that are honest when scoped to the
+  moment of observation are checked for that scope rather than banned.
+- **Every system gets a section, including one with nothing in it**, which says that nothing
+  was observed. Silence about a system reads as "not inspected" — a different and more
+  dangerous claim.
+- **A photo URL is a capability, not an identifier** (see below), so only the stable form is
+  stored, it is scrubbed from every log line, and the model's own `__str__` refuses to print
+  it.
+- **EXIF is stripped from every photograph.** A phone photograph of a house carries the
+  house's coordinates, and this document goes to buyers, agents and lenders.
+- **Repair pricing is refused by the rail.** A number in the report reads as an estimate the
+  inspector is standing behind; that belongs in a contractor's quote.
+- **Photographs are not analysed by a model.** Asking one to describe a property from a
+  photograph invites exactly the over-claiming this build exists to prevent.
+- **`model_tier` is a parameter, never a constant**, as the integration guidance asks. The
+  right default for a legal document is not the right default for a quick pass.
+
+## What the API actually does, where it differs from its documentation
+
+Everything here was established by calling the endpoint and reading the response. Each one is
+reported to SuperDocs.
+
+- **`export` immediately after `approve` can return the pre-approval document.** The most
+  serious of these. On a live run, `approve` returned 200; the PDF exported two seconds later
+  carried the original text while a `.docx` of the same session one second after that carried
+  the approved rewrites. Re-exporting minutes later returned the approved text in both, so it
+  is a timing race rather than a difference between exporters. **Mitigation:** every approved
+  rewrite is read back out of the exported bytes and the export is repeated with backoff until
+  they are present. Exports cost nothing, which is what makes re-reading the right answer; if
+  it never converges the mismatch is logged at ERROR rather than reported as success.
+- **An uploaded image is world-readable.** The endpoint returns a stable `url` and a signed
+  `view_url` with a 24-hour expiry, which implies access control. Fetching the plain `url`
+  with no authorization header at all returns the image. The signature is decorative, and the
+  URL is a permanent capability.
+- **`class` survives upload; custom `data-*` attributes do not.** So findings are targeted by
+  class and never by an id of our own. The fake strips `data-*` the same way, because a fake
+  more permissive than the service is how a design comes to depend on something that is not
+  there.
+- **A completed job hides its document.** `document_html` is `null`; the content is at
+  `result.document_changes.updated_html`.
+- **`approve` keys on `change_id`, not `chunk_id`,** and closes the job it is called on, so a
+  job's decisions are collected and sent once.
+- **`/v1/users/me/usage` and `/limits` reject API keys** with a 401 saying they need a signed-in
+  user session. `whoami` reports the subscription quota and omits the promotional bucket
+  entirely. The only honest meter is `result.usage` on a chat job.
+- **`session_id` on the templates upload does nothing.** The shared request schema documents
+  it as loading the template into a session; exporting that session returns "No document
+  loaded in this session."
+
+## Things I got wrong, and what fixed them
+
+Kept because the fixes are the interesting part.
+
+- **The rail refused the report's own disclaimer.** "…is not a certification, warranty or
+  guarantee…" tripped three rules, and "warrants evaluation" — the ordinary English verb —
+  tripped a fourth. The first fix listed the allowed phrasings, which would have reopened on
+  the next phrasing. The second recognises the verb by what it governs anywhere in the
+  sentence, and a test now holds every rule to the wording it recommends.
+- **An early `absolute_negative` rule banned the exact sentence its own guidance suggested.**
+  One scoped rule now covers the whole class of negative findings rather than a list of nouns
+  that goes stale.
+- **The verifier located systems by searching the flattened text**, which found their names in
+  the "what was inspected" sentence and put every section boundary in the wrong place. It is
+  line-oriented now, anchored on headings.
+- **It also missed a phrase in the PDF that it found in the .docx**, because a PDF export wraps
+  a paragraph across lines. It searches the joined text and maps back to a line.
+- **Word stores `Heating &amp; Cooling`,** so a heading plainly present was reported missing.
+- **Inserting photographs at full resolution** made an 8.3 MB file out of 57 KB of image data.
+
+## Verification
+
+- 106 tests, none needing an API key. No `unittest.mock`, no patching: a deterministic fake
+  that satisfies the same typed protocol as the live client, and real image bytes generated by
+  a committed script.
+- `make check` is ruff + `ruff format --check` + `mypy --strict` + the suite, in Docker.
+- The whole path proven live against the real API: photographs uploaded, report uploaded,
+  rewrites proposed and gated, one approve call, PDF and DOCX exported with all photographs
+  embedded, and the same verifier run over the live-exported bytes.
+- The exported PDF was opened and looked at, not just parsed.
+
+## Not built
+
+- **The browser interface.** An inspector needs it on site, and it is the next piece of work.
+  I would rather hand over a spine that is proven than a screen that is not.
+- Multi-property scheduling, a job queue, and user accounts beyond a single firm.
