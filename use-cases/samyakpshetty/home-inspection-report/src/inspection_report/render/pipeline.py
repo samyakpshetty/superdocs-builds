@@ -192,15 +192,68 @@ def build(
         _apply_to_findings(inspection, result.proposals)
 
     name = _slug(inspection)
+    expected = [_text_of(p.diff.new_html)[:60] for p in result.proposals if p.approved]
     for fmt in formats:
-        result.exports[fmt] = client.export(
-            session_id=session_id,
-            fmt=fmt,
-            options=ExportOptions(
-                paper_size="Letter", margins="normal", filename=name, embed_images=True
-            ),
+        result.exports[fmt] = _export_when_current(
+            client, session_id=session_id, fmt=fmt, filename=name, expected=expected
         )
     inspection.stage = ReportStage.EXPORTED
+    return result
+
+
+def _export_when_current(
+    client: SuperDocsClient,
+    *,
+    session_id: str,
+    fmt: str,
+    filename: str,
+    expected: list[str],
+    attempts: int = 5,
+    wait_s: float = 2.0,
+) -> ExportResult:
+    """Export, and refuse to accept a file that predates the approvals.
+
+    Exporting immediately after approving can return the **pre-approval** document, with a
+    200 and no warning: on a live run the PDF came back with the inspector's original text
+    while a .docx of the same session two seconds later carried the approved rewrites, and
+    re-exporting the same session later returned the approved text in both. So the export
+    is treated as eventually consistent and read back before it is accepted.
+
+    Exports cost nothing, which is what makes retrying the right answer rather than an
+    expensive one. If it never converges the caller still gets the file — with the mismatch
+    recorded, because silently shipping a report that is missing approved changes is the one
+    outcome this must not have.
+    """
+    import time
+
+    from inspection_report.verify import exports as verify_exports
+
+    options = ExportOptions(
+        paper_size="Letter", margins="normal", filename=filename, embed_images=True
+    )
+    result = client.export(session_id=session_id, fmt=fmt, options=options)
+    if not expected:
+        return result
+
+    for attempt in range(attempts):
+        text = (
+            verify_exports.text_of_docx(result.content)
+            if fmt == "docx"
+            else verify_exports.text_of_pdf(result.content)
+        )
+        flat = " ".join(text.split())
+        missing = [phrase for phrase in expected if phrase not in flat]
+        if not missing:
+            return result
+        if attempt == attempts - 1:
+            _log.error(
+                "export_stale_after_approval",
+                extra={"fmt": fmt, "missing": len(missing), "attempts": attempts},
+            )
+            return result
+        _log.info("export_stale_retrying", extra={"fmt": fmt, "missing": len(missing)})
+        time.sleep(wait_s * (attempt + 1))
+        result = client.export(session_id=session_id, fmt=fmt, options=options)
     return result
 
 

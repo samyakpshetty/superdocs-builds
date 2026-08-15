@@ -1,0 +1,36 @@
+<h1>{{firm_name}}</h1>
+<p><strong>Full technical inspection report</strong> &mdash; {{property_address}}</p>
+<p>Inspected by {{inspector_name}}{{licence_suffix}} on {{inspected_on}}.</p>
+
+<h2>Purpose and standing</h2>
+<p>{{preamble}}</p>
+<p>This edition carries the full record: every system examined, every observation entered in
+the field, the recommended next step for each, and the photographs taken at the time. It is
+intended for a reader who wants the complete file &mdash; a specialist quoting remedial work,
+a surveyor, or a buyer's advisor.</p>
+
+<h2>Severity labels used in this report</h2>
+<!-- region:legend -->
+<p><strong>{{severity_label}}</strong> &mdash; {{severity_description}}</p>
+<!-- /region:legend -->
+
+<h2>Systems examined</h2>
+<p>{{systems_inspected}}</p>
+
+<!-- region:system -->
+<h2>{{system_name}}</h2>
+<p><em>Scope: {{system_blurb}}</em></p>
+<p>{{system_summary}}</p>
+<!-- region:finding -->
+<h3>{{severity_label}}: {{finding_title}}</h3>
+<p class="finding-note">{{finding_text}}</p>
+<p><strong>Recommended next step:</strong> {{finding_recommendation}}</p>
+<!-- region:photo -->
+<p><img src="{{photo_url}}" alt="{{photo_caption}}"></p>
+<p><em>Figure &mdash; {{photo_caption}}</em></p>
+<!-- /region:photo -->
+<!-- /region:finding -->
+<!-- /region:system -->
+
+<h2>Scope and limits of this inspection</h2>
+<p>{{limits}}</p>

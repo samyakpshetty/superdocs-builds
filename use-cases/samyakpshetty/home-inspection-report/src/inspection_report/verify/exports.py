@@ -10,6 +10,7 @@ It runs against both the offline and the live path, because both produce real fi
 
 from __future__ import annotations
 
+import bisect
 import html as html_lib
 import io
 import re
@@ -105,6 +106,19 @@ def verify(
     # flattened text finds that sentence and puts every section boundary in the wrong place.
     lines = [" ".join(ln.split()) for ln in text.splitlines() if ln.strip()]
     flat = " ".join(lines)
+    # Offset of each line within `flat`, so a phrase found in the joined text can be mapped
+    # back to the line it starts on. Needed because a PDF export wraps a paragraph across
+    # several lines while Word keeps it as one: searching line by line finds a long phrase
+    # in the .docx and misses the identical phrase in the .pdf.
+    line_start: list[int] = []
+    cursor = 0
+    for ln in lines:
+        line_start.append(cursor)
+        cursor += len(ln) + 1
+
+    def line_of(offset: int) -> int:
+        return bisect.bisect_right(line_start, offset) - 1
+
     image_count = len(images_in_docx(data)) if fmt == "docx" else images_in_pdf(data)
 
     # 1. Every system in the catalogue has a heading of its own.
@@ -135,10 +149,11 @@ def verify(
     for finding in inspection.findings:
         system_name = catalogue.system(finding.system_key).name
         needle = " ".join(finding.prose().split())[:60]
-        at = next((i for i, ln in enumerate(lines) if needle in ln), -1)
-        if at < 0:
+        offset = flat.find(needle)
+        if offset < 0:
             misplaced.append(f"{needle[:32]!r} not in the file")
             continue
+        at = line_of(offset)
         start = heading_at.get(system_name, -1)
         after = [b for b in boundaries if b > start]
         end = after[0] if after else len(lines)

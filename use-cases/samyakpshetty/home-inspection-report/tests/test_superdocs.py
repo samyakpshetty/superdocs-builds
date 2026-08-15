@@ -161,6 +161,19 @@ class TestChunkIds:
         assert result.chunks_count == 5
         assert result.html.count("data-chunk-id") == 5
 
+    def test_custom_data_attributes_are_dropped_but_class_survives(
+        self, client: FakeSuperDocsClient
+    ) -> None:
+        """Live behaviour, verified against the API: `class` is kept, `data-*` is stripped.
+
+        This is why findings are targeted by class and never by an id of our own.
+        """
+        html = '<p class="finding-note" data-finding="f1">flashing gap at chimney</p>'
+        out = client.upload_document(document_html=html, session_id="s1").html
+        assert 'class="finding-note"' in out
+        assert "data-finding" not in out
+        assert "data-chunk-id" in out
+
     def test_ids_round_trip_unchanged(self, client: FakeSuperDocsClient) -> None:
         """Live behaviour: 6 ids out, the same 6 back. Re-stamping would break targeting."""
         first = client.upload_document(document_html=DOC, session_id="s1").html

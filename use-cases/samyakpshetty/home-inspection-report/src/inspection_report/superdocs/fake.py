@@ -43,6 +43,8 @@ from inspection_report.superdocs.offline_export import ImageResolver, to_docx, t
 
 _DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _BLOCK = re.compile(r"<(h[1-4]|p|li|blockquote)(\s[^>]*)?>", re.IGNORECASE)
+# Everything `data-*` except the service's own chunk id, which is what upload adds.
+_CUSTOM_DATA_ATTR = re.compile(r'\s+data-(?!chunk-id\b)[\w-]+="[^"]*"', re.IGNORECASE)
 
 # Mirrors the live bucket, so redaction and capability-URL handling are exercised offline
 # against a realistically shaped URL rather than a placeholder.
@@ -120,8 +122,13 @@ class FakeSuperDocsClient:
 
         def stamp(m: re.Match[str]) -> str:
             tag, attrs = m.group(1), m.group(2) or ""
+            # The live service drops custom `data-*` attributes on upload while keeping
+            # `class`. Verified against the API, and reproduced here: a fake that carried
+            # our own data attributes through would let a design depend on something the
+            # real service throws away.
+            attrs = _CUSTOM_DATA_ATTR.sub("", attrs)
             if "data-chunk-id" in attrs:
-                return m.group(0)
+                return f"<{tag}{attrs}>"
             # Deterministic ids: the same document always produces the same chunk ids, so a
             # test can assert on them without being brittle.
             cid = hashlib.sha1(f"{session_id}:{next(counter)}".encode()).hexdigest()[:32]
