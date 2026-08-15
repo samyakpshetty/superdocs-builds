@@ -13,6 +13,7 @@ import pytest
 from inspection_report import sample
 from inspection_report.domain import catalogue
 from inspection_report.render import pipeline, report
+from inspection_report.superdocs.base import SuperDocsError
 from inspection_report.superdocs.fake import FakeSuperDocsClient
 from inspection_report.templates import binding, docx_html
 from inspection_report.verify import exports as verify_exports
@@ -234,3 +235,109 @@ def test_a_system_with_no_findings_says_so_rather_than_going_missing() -> None:
     for system in catalogue.systems():
         assert system.name in html
     assert report.NOTHING_OBSERVED in html
+
+
+class TestAFinishedReportSurvivesLosingItsSession:
+    """A report that is already signed off must stay exportable.
+
+    The session is where the document lives on SuperDocs' side, and a session does not
+    outlive everything: the process restarts, the service forgets it, someone exports the
+    report again weeks later. None of that loses anything — the findings, the approved
+    wording and the photograph URLs are all in our own record — so the document is rebuilt
+    from there rather than the export failing on finished work.
+
+    Found by using the interface: restarting the API left an exported inspection unable to
+    export, with SuperDocs' own "no document loaded" message shown to the inspector.
+    """
+
+    def _finished(self) -> tuple[object, FakeSuperDocsClient]:
+        inspection = sample.sample_inspection()
+        client = FakeSuperDocsClient()
+        pipeline.build(
+            inspection,
+            format_html(),
+            sample.sample_photo_data(),
+            client,
+            session_id="recover-me",
+            settle_s=0.0,
+        )
+        return inspection, client
+
+    def test_the_export_rebuilds_and_still_verifies(self) -> None:
+        inspection, client = self._finished()
+        client.sessions.clear()  # the restart
+
+        export, rebuilt = pipeline.export_recovering_session(
+            client,
+            inspection,  # type: ignore[arg-type]
+            format_html(),
+            session_id="recover-me",
+            fmt="docx",
+            filename="recovered",
+            expected=["something that is no longer pending"],
+            settle_s=0.0,
+        )
+        assert rebuilt is True
+        card = verify_exports.verify(
+            data=export.content,
+            fmt="docx",
+            inspection=inspection,  # type: ignore[arg-type]
+        )
+        assert card.passed, card.render()
+
+    def test_the_approved_wording_is_still_in_the_rebuilt_file(self) -> None:
+        """The rebuild renders from what was approved, not from the inspector's shorthand."""
+        inspection, client = self._finished()
+        approved = [f for f in inspection.findings if f.plain_language]  # type: ignore[attr-defined]
+        assert approved, "the sample is chosen so some rewrites are approved"
+        client.sessions.clear()
+
+        export, _ = pipeline.export_recovering_session(
+            client,
+            inspection,  # type: ignore[arg-type]
+            format_html(),
+            session_id="recover-me",
+            fmt="docx",
+            filename="recovered",
+            expected=[],
+            settle_s=0.0,
+        )
+        text = verify_exports.text_of_docx(export.content)
+        for finding in approved:
+            assert finding.plain_language in text
+
+    def test_a_live_session_is_not_rebuilt(self) -> None:
+        """The recovery is for a lost session only; it must not fire on the normal path."""
+        inspection, client = self._finished()
+        _, rebuilt = pipeline.export_recovering_session(
+            client,
+            inspection,  # type: ignore[arg-type]
+            format_html(),
+            session_id="recover-me",
+            fmt="docx",
+            filename="normal",
+            expected=[],
+            settle_s=0.0,
+        )
+        assert rebuilt is False
+
+    def test_an_unrelated_failure_is_not_swallowed(self) -> None:
+        """Only "no document loaded" is recoverable. Everything else must still surface."""
+        inspection, _ = self._finished()
+
+        class Broken(FakeSuperDocsClient):
+            def export(self, **kwargs: object) -> object:
+                raise SuperDocsError("upstream is on fire")
+
+        with pytest.raises(SuperDocsError) as exc:
+            pipeline.export_recovering_session(
+                Broken(),
+                inspection,  # type: ignore[arg-type]
+                format_html(),
+                session_id="recover-me",
+                fmt="docx",
+                filename="boom",
+                expected=[],
+                settle_s=0.0,
+            )
+        assert "on fire" in str(exc.value)

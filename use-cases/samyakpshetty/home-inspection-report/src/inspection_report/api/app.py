@@ -508,8 +508,13 @@ def export_report(inspection_id: UUID, fmt: str = "pdf", conn: Any = Depends(get
             for r in db.load_proposals(conn, inspection_id)
             if r["decision"] == "approved"
         ]
-        export = pipeline._export_when_current(
+        # Rebuilds the session's document from our own record if the session is gone, so a
+        # finished report stays exportable across a restart. The flag says which path it
+        # took; it is reported rather than swallowed.
+        export, rebuilt = pipeline.export_recovering_session(
             client,
+            inspection,
+            template,
             session_id=_session_id(inspection_id),
             fmt=fmt,
             filename=_export_name(inspection),
@@ -540,6 +545,10 @@ def export_report(inspection_id: UUID, fmt: str = "pdf", conn: Any = Depends(get
         headers={
             "Content-Disposition": f'attachment; filename="{export.filename}"',
             "X-Report-Verified": "pass" if card.passed else "fail",
+            # Says how the document reached the export: from the live session, or rebuilt
+            # from our own record because the session was gone. A caller should never have
+            # to guess which, and the verification below applies either way.
+            "X-Report-Source": "rebuilt" if rebuilt else "session",
             "X-Report-Checks": json.dumps(
                 [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in card.checks]
             ),

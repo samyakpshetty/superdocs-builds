@@ -20,7 +20,7 @@ from inspection_report.domain.models import Inspection, ReportStage
 from inspection_report.logging import get_logger
 from inspection_report.phrasing import rail
 from inspection_report.render import report as render_report
-from inspection_report.superdocs.base import SuperDocsClient
+from inspection_report.superdocs.base import SuperDocsClient, SuperDocsError
 from inspection_report.superdocs.models import (
     ApprovalDecision,
     ChunkDiff,
@@ -285,6 +285,67 @@ def build(
         )
     inspection.stage = ReportStage.EXPORTED
     return result
+
+
+def export_recovering_session(
+    client: SuperDocsClient,
+    inspection: Inspection,
+    template_html: str,
+    *,
+    session_id: str,
+    fmt: str,
+    filename: str,
+    expected: list[str],
+    settle_s: float = SETTLE_AFTER_APPROVE_S,
+) -> tuple[ExportResult, bool]:
+    """Export a finished report, rebuilding the session's document if it is gone.
+
+    Returns the file and whether it had to be rebuilt.
+
+    A session is where the document lives, and a session does not outlive everything: the
+    process restarts, the service forgets it, someone exports a report again weeks after it
+    was signed off. None of that loses anything — every finding, every approved rewrite and
+    every photograph is in our own database — so the document is re-rendered from there
+    rather than the export failing on a report that is already finished.
+
+    The rebuild is deterministic and neither upload nor export costs an operation, which is
+    what makes this the cheap answer rather than a clever one. What it must not do is happen
+    silently: a rebuilt document is rendered from the approved wording recorded against each
+    finding, so there is nothing left pending for the export to wait on, and the caller is
+    told which path produced the file.
+    """
+    try:
+        return (
+            _export_when_current(
+                client,
+                session_id=session_id,
+                fmt=fmt,
+                filename=filename,
+                expected=expected,
+                settle_s=settle_s,
+            ),
+            False,
+        )
+    except SuperDocsError as exc:
+        if "no document loaded" not in str(exc).lower():
+            raise
+    _log.info("session_lost_rebuilding", extra={"session_id": session_id})
+    client.upload_document(
+        document_html=render_report.render(inspection, template_html), session_id=session_id
+    )
+    return (
+        _export_when_current(
+            client,
+            session_id=session_id,
+            fmt=fmt,
+            filename=filename,
+            # The rebuilt document already carries the approved wording, so there is no
+            # pending approval to wait on — and waiting for one would never converge.
+            expected=[],
+            settle_s=0.0,
+        ),
+        True,
+    )
 
 
 def _export_when_current(

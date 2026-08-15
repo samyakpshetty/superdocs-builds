@@ -14,6 +14,23 @@ import { Flagged, ReportShape, WordDiff } from "./insight";
 type Screen = "list" | "walk" | "gate" | "export";
 
 /**
+ * `stage` is an enum on the wire, and `in_review` is not a thing anyone says. The words are
+ * here rather than in the API because they are how this interface talks about the flow, and
+ * a second client is entitled to its own wording.
+ */
+const STAGE_WORDS: Record<string, string> = {
+  draft: "still walking",
+  prepared: "ready for review",
+  in_review: "at the review gate",
+  approved: "approved",
+  exported: "exported",
+};
+
+function stageLabel(stage: string): string {
+  return STAGE_WORDS[stage] ?? stage.replace(/_/g, " ");
+}
+
+/**
  * Confirmation for actions that would otherwise complete in silence — recording a finding,
  * accepting a photograph, sending decisions. It is announced politely as well as shown,
  * because the person using this is often not looking at the screen when it happens.
@@ -159,7 +176,7 @@ function InspectionList({
                 <strong>{r.address_line}</strong>
                 <span className="list__meta">
                   {r.city} · {r.inspected_on} · {r.finding_count}{" "}
-                  {r.finding_count === 1 ? "finding" : "findings"} · {r.stage}
+                  {r.finding_count === 1 ? "finding" : "findings"} · {stageLabel(r.stage)}
                 </span>
               </span>
               <span aria-hidden="true">›</span>
@@ -358,7 +375,7 @@ function Walk({
   const [openSystem, setOpenSystem] = useState<string | null>(null);
 
   return (
-    <div className="stack">
+    <div className="stack stack--sections">
       <ReportShape
         systems={catalogue.systems}
         severities={catalogue.severities}
@@ -371,7 +388,7 @@ function Walk({
       {catalogue.systems.map((system) => {
         const findings = inspection.findings.filter((f) => f.system_key === system.key);
         return (
-          <section className="card stack" key={system.key}>
+          <section className="system stack" key={system.key}>
             <div className="section-head">
               <h3>{system.name}</h3>
               <span className="section-head__count">
@@ -434,12 +451,12 @@ function FindingCard({
   const fileRef = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="card card--flat stack" style={{ background: "var(--surface)" }}>
-      <div className="row">
+    <div className="finding">
+      <div className="finding__head">
         <SeverityTag severity={severity} />
-        {finding.location && <strong>{finding.location}</strong>}
+        {finding.location && <span className="finding__where">{finding.location}</span>}
       </div>
-      <p>{finding.observation}</p>
+      <p className="finding__note">{finding.observation}</p>
       {finding.plain_language && (
         <div className="notice notice--ok">
           <div className="notice__head">Approved rewrite, used in the report</div>
@@ -641,7 +658,7 @@ function Gate({
   const allDecided = (proposals ?? []).length > 0 && undecided.length === 0;
 
   return (
-    <div className="stack">
+    <div className="stack stack--sections">
       <div className="card stack">
         <h3>Plain-language rewrite</h3>
         <p className="hint">
@@ -703,7 +720,7 @@ function Gate({
       )}
 
       {proposals?.map((p) => (
-        <article className="card stack" key={p.change_id}>
+        <article className="proposal stack" key={p.change_id}>
           <div className="diff">
             <div className="diff__side">
               <span className="diff__label">What you wrote</span>
@@ -819,6 +836,10 @@ function ExportPanel({
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [verified, setVerified] = useState<boolean | null>(null);
 
+  const photoCount = inspection.findings.reduce((n, f) => n + f.photos.length, 0);
+  const systemsWithFindings = new Set(inspection.findings.map((f) => f.system_key)).size;
+  const rewritten = inspection.findings.filter((f) => f.plain_language).length;
+
   const run = (fmt: "pdf" | "docx") => {
     setBusy(fmt);
     setError(null);
@@ -851,6 +872,35 @@ function ExportPanel({
           Findings are grouped by inspection system, most urgent first within each. Photographs
           are embedded in the file itself, so the report carries its own evidence.
         </p>
+
+        {/* What is about to be produced, before it is produced. This is the last screen
+            before a document goes to a buyer, and it was the one screen with nothing on it
+            to check against. All of it is already known here — none of it costs a call. */}
+        <dl className="tally">
+          <div>
+            <dt>Format</dt>
+            <dd>{inspection.template_key.replace(/_/g, " ")}</dd>
+          </div>
+          <div>
+            {/* Every system gets a section either way; this is how many have something in
+                them. A system with nothing under it says so, which is the point. */}
+            <dt>Systems with findings</dt>
+            <dd>{systemsWithFindings}</dd>
+          </div>
+          <div>
+            <dt>Findings</dt>
+            <dd>{inspection.findings.length}</dd>
+          </div>
+          <div>
+            <dt>Photographs</dt>
+            <dd>{photoCount}</dd>
+          </div>
+          <div>
+            <dt>Rewrites in use</dt>
+            <dd>{rewritten} of {inspection.findings.length}</dd>
+          </div>
+        </dl>
+
         <div className="row">
           <button className="btn--primary" disabled={busy !== null} onClick={() => run("pdf")}>
             {busy === "pdf" ? "Building…" : "Download PDF"}
