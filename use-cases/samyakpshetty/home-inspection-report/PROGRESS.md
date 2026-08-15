@@ -31,6 +31,48 @@ safety**", "older but **operational**", and "**typical for the home's age**" —
 assurance, a functional verdict, and a reassurance no inspector gave. Those three sentences
 are now the regression suite.
 
+## The experiment that decided the architecture
+
+The three decisions above were reasoned from how the templates surface behaves. Reasoning is
+not evidence, so before committing to them I built the opposite design and measured it: let
+SuperDocs' AI assemble the whole report from a registered format, and let the export verifier
+be the guarantee instead of the renderer. If the AI groups correctly, the verifier passes and
+the deterministic renderer is unnecessary machinery.
+
+It does not, and the way it fails is worth recording.
+
+| What was asked, all on one session, one document, one approval mode | What happened |
+|---|---|
+| Load a registered `.docx` format into the session | **Works.** Returned exactly as saved — headings, bold, italics, the legend, the standing text, chunk ids assigned. One turn is a *load*, not a draft: it edits nothing |
+| Three unrelated replacements, sentinels at char 172, 2,938 and 5,703 of a 5,716-char message | **3/3 applied.** Long messages are not truncated |
+| One system, two findings: replace one placeholder paragraph with six new ones (172 → 610 chars) | **Applied**, correctly placed, and the other five sections untouched. Surgical |
+| Six systems, eight findings, in one request | **Nothing.** One unrelated deletion applied, one operation charged, and a reply asking for the findings that were in the message |
+
+So the boundary is not message size, not instruction-following, and not the ability to author
+new structure. It is the **scope of a single request**. Narrow asks are precise; a
+whole-document authoring ask collapses, and says something misleading while it does.
+
+Three things follow, and they are the shape of the build:
+
+- **The report format is a real `.docx`.** This half of the alternative design was right and
+  is now proven end to end: a Word document a firm could open, edit and recognise, registered
+  with SuperDocs, loaded back with its structure intact. It replaces the HTML formats marked
+  up with `<!-- region:system -->` comments, which could never have worked, because upload
+  strips HTML comments (finding 6). The bracketed placeholder paragraphs a human writes in
+  Word survive the round trip and are what the binding engine anchors on — the marker is now
+  something an author can see and type, rather than an invisible comment.
+- **Assembly stays deterministic.** Not because the AI grouped things wrongly — it never got
+  far enough to group anything — but because the one operation that reliably does this work
+  is a narrow, targeted edit, and a report needs the whole structure at once. Doing it
+  through the AI would cost one operation per system and put the card's single stated
+  requirement at the mercy of the request that failed above.
+- **The AI keeps the job it is measurably good at:** rewriting one chunk at a time, which is
+  what the product says it is for. That is one operation per report, gated by a human, with
+  the rail in front of it.
+
+The export verifier stays exactly as it is. It was written to prove the renderer's output and
+it now also stands as the check on anything the AI touched.
+
 ## Calls made where the brief or the API was silent
 
 - **The rail governs generated text only, never the inspector's own words.** They are the

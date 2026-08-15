@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class JobStatus(StrEnum):
@@ -78,6 +78,14 @@ class ChunkDiff(BaseModel):
 
     ``change_id`` is what ``approve`` keys on. Approving by ``chunk_id`` returns a 500 — this
     was established against the live API and contradicts the published documentation.
+
+    Not every edit is a replacement. A **deletion** arrives with ``new_html: null`` and an
+    **insertion** with ``old_html: null``, so the side that does not exist is absent rather
+    than empty. Declaring these as plain ``str`` made the whole job unparseable the first time
+    the AI was asked to remove a section: one null field, and a completed job that had already
+    been paid for could not be read. Null is normalised to the empty string here, in one
+    place, so nothing downstream has to know — and ``operation`` still says which kind of
+    edit it is.
     """
 
     model_config = {"extra": "ignore"}
@@ -89,6 +97,25 @@ class ChunkDiff(BaseModel):
     new_html: str = ""
     chunk_type: str = ""
     ai_explanation: str = ""
+
+    @field_validator(
+        "chunk_id",
+        "change_id",
+        "operation",
+        "old_html",
+        "new_html",
+        "chunk_type",
+        "ai_explanation",
+        mode="before",
+    )
+    @classmethod
+    def _null_is_absent(cls, value: Any) -> Any:
+        return "" if value is None else value
+
+    @property
+    def is_deletion(self) -> bool:
+        """The change removes content rather than replacing it."""
+        return bool(self.old_html) and not self.new_html
 
 
 class Usage(BaseModel):

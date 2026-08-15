@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -25,6 +26,7 @@ from inspection_report.superdocs.base import (
     MAX_IMAGE_BYTES,
     SessionBusyError,
     SuperDocsError,
+    parse_pending_changes,
 )
 from inspection_report.superdocs.models import (
     ApprovalDecision,
@@ -227,8 +229,16 @@ class FakeSuperDocsClient:
         return job_id
 
     def _propose(self, html: str) -> list[ChunkDiff]:
-        """One proposed rewrite per findings paragraph, deterministic in content."""
-        out: list[ChunkDiff] = []
+        """One proposed rewrite per findings paragraph, deterministic in content.
+
+        The proposals are assembled as the **wire shape** and handed to the same parser the
+        live client uses, rather than constructed as typed objects directly. Building them
+        directly left the parser exercised only against the live service, which is how a
+        change carrying ``new_html: null`` took down a job that had already been paid for:
+        offline, nothing ever went through that code path. Routing the fake through it means
+        a parse that would fail live now fails in the keyless suite instead.
+        """
+        items: list[dict[str, object]] = []
         # Attribute order is not guaranteed — stamping appends data-chunk-id after whatever
         # the renderer already wrote — so match the tag and read its attributes, rather than
         # assuming one ordering and silently proposing nothing when it differs.
@@ -246,18 +256,22 @@ class FakeSuperDocsClient:
             new = self._rewrite(text)
             if new == text:
                 continue
-            out.append(
-                ChunkDiff(
-                    chunk_id=chunk_id,
-                    change_id=f"chg-{chunk_id[:12]}",
-                    operation="replace",
-                    old_html=inner,
-                    new_html=new,
-                    chunk_type="paragraph",
-                    ai_explanation="Rewritten for a reader who has not seen an inspection report.",
-                )
+            items.append(
+                {
+                    "chunk_id": chunk_id,
+                    "change_id": f"chg-{chunk_id[:12]}",
+                    "operation": "replace",
+                    "old_html": inner,
+                    "new_html": new,
+                    "chunk_type": "paragraph",
+                    # Null, not "": the live service omits this on some changes, and a fake
+                    # that always supplies a string would hide that from the parser.
+                    "ai_explanation": None,
+                }
             )
-        return out
+        # The double encoding is the live shape too: `pending_changes` arrives as a
+        # JSON-encoded string that needs a second parse.
+        return parse_pending_changes({"metadata": {"pending_changes": json.dumps(items)}})
 
     def _rewrite(self, text: str) -> str:
         for pattern, replacement in _REWRITES:

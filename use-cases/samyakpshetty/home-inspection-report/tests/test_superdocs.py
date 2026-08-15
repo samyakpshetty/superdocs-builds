@@ -80,6 +80,58 @@ class TestParsingTheDocumentedTraps:
         }
         assert base.parse_document_html(payload) == "<h1>Report</h1>"
 
+    def test_a_deletion_arrives_with_a_null_new_html(self) -> None:
+        """Not every edit is a replacement, and the missing side is null rather than "".
+
+        Observed live: asked to remove a section, the service proposed one change whose
+        ``new_html`` was ``null``. Declaring the field as a plain ``str`` made the entire
+        job unparseable — a completed job that had already been charged for could not be
+        read at all, because one field of one change was absent. The payload below is the
+        shape that came back.
+        """
+        payload = {
+            "result": {
+                "document_changes": {
+                    "changes": [
+                        {
+                            "chunk_id": "c9",
+                            "change_id": "x9",
+                            "operation": "delete",
+                            "old_html": "<p>[How each finding is recorded]</p>",
+                            "new_html": None,
+                            "chunk_type": "paragraph",
+                            "ai_explanation": None,
+                        }
+                    ]
+                }
+            }
+        }
+        diffs = base.parse_pending_changes(payload)
+        assert len(diffs) == 1
+        assert diffs[0].new_html == ""
+        assert diffs[0].ai_explanation == ""
+        assert diffs[0].is_deletion
+
+    def test_an_insertion_arrives_with_a_null_old_html(self) -> None:
+        """The mirror case: new content with nothing on the left-hand side."""
+        payload = {
+            "metadata": {
+                "pending_changes": json.dumps(
+                    [
+                        {
+                            "change_id": "x10",
+                            "operation": "insert",
+                            "old_html": None,
+                            "new_html": "<p>Recommend evaluation: North chimney</p>",
+                        }
+                    ]
+                )
+            }
+        }
+        diffs = base.parse_pending_changes(payload)
+        assert diffs[0].old_html == ""
+        assert not diffs[0].is_deletion
+
     def test_usage_prefers_the_promotional_bucket(self) -> None:
         """whoami reports the subscription quota and omits the promo entirely."""
         usage = base.parse_usage(
