@@ -203,8 +203,11 @@ function InspectionList({
       )}
       {rows && rows.length > 0 && (
         <div className="list">
-          {rows.map((r) => (
+          {rows.map((r, i) => (
             <button key={r.id} className="list__item" onClick={() => onOpen(r.id)}>
+              <span className="list__index" aria-hidden="true">
+                {String(i + 1).padStart(2, "0")}
+              </span>
               <span className="list__main">
                 <strong>{r.address_line}</strong>
                 <span className="list__meta">
@@ -418,26 +421,30 @@ function Walk({
         Findings are grouped by system in the report, in this order, whatever order you record
         them in.
       </p>
-      {catalogue.systems.map((system) => {
+      {catalogue.systems.map((system, index) => {
         const findings = inspection.findings.filter((f) => f.system_key === system.key);
         return (
-          <section className="system stack" key={system.key}>
-            <div className="section-head">
-              <h3>{system.name}</h3>
+          <section className="ruled" key={system.key}>
+            {/* The rail carries the section number and the count, the way a report's
+                sections are numbered. The content sits beside it. */}
+            <div className="ruled__rail">
+              <span className="section-num">{String(index + 1).padStart(2, "0")}</span>
               <span className="section-head__count">
-                {findings.length === 0
-                  ? "nothing recorded"
-                  : `${findings.length} recorded`}
+                {findings.length === 0 ? "none" : `${findings.length} recorded`}
               </span>
-              <div className="section-head__actions">
-                <button
-                  className="btn--small"
-                  onClick={() => setOpenSystem(openSystem === system.key ? null : system.key)}
-                >
-                  {openSystem === system.key ? "Close" : "Add finding"}
-                </button>
-              </div>
             </div>
+            <div className="ruled__body">
+              <div className="section-head">
+                <h3>{system.name}</h3>
+                <div className="section-head__actions">
+                  <button
+                    className="btn--small"
+                    onClick={() => setOpenSystem(openSystem === system.key ? null : system.key)}
+                  >
+                    {openSystem === system.key ? "Close" : "Add finding"}
+                  </button>
+                </div>
+              </div>
 
             {findings.map((f) => (
               <FindingCard
@@ -449,18 +456,19 @@ function Walk({
               />
             ))}
 
-            {openSystem === system.key && (
-              <NewFinding
-                inspectionId={inspection.id}
-                systemKey={system.key}
-                catalogue={catalogue}
-                onAdded={() => {
-                  setOpenSystem(null);
-                  onChanged();
-                  say(`Finding recorded under ${system.name}.`);
-                }}
-              />
-            )}
+              {openSystem === system.key && (
+                <NewFinding
+                  inspectionId={inspection.id}
+                  systemKey={system.key}
+                  catalogue={catalogue}
+                  onAdded={() => {
+                    setOpenSystem(null);
+                    onChanged();
+                    say(`Finding recorded under ${system.name}.`);
+                  }}
+                />
+              )}
+            </div>
           </section>
         );
       })}
@@ -755,11 +763,11 @@ function Gate({
       {proposals?.map((p) => (
         <article className="proposal stack" key={p.change_id}>
           <div className="diff">
-            <div className="diff__side">
+            <div className="diff__side diff__side--original">
               <span className="diff__label">What you wrote</span>
               <div className="diff__text">{p.before}</div>
             </div>
-            <div className="diff__side">
+            <div className="diff__side diff__side--proposed">
               <span className="diff__label">
                 {p.rail_clean ? "Proposed for the buyer — additions marked" : "Proposed — flagged wording marked"}
               </span>

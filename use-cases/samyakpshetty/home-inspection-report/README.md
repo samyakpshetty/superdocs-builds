@@ -120,12 +120,32 @@ The grid is the one view that answers the question everybody asks first — wher
 problems, and how bad. An empty row says nothing was observed in that system, which is not
 the same as it having been skipped, and the report says so too.
 
-Colour means severity here and nothing else. That rules out the usual way of making an
-interface look designed — a brand accent, a coloured header — so this one is built out of
-type, rule and space instead. On a document where a buyer has to spot "recommend prompt
+**This tool makes a printed document, so it is set like one.** An inspection report has a
+title page, standing text, numbered sections and a severity legend; building the interface to
+look like the artefact it produces is the fastest way to understand what you are assembling.
+Sections are numbered on an editorial grid, with a narrow rail carrying the number and the
+count beside the column you read.
+
+Three type voices, each with a job, so you can tell what kind of thing you are looking at
+before you read it:
+
+| voice | carries |
+|---|---|
+| serif | the document — the property, section headings, the buyer-facing prose |
+| sans | the interface — buttons, fields, anything you operate rather than read |
+| mono | the field — what the inspector typed, severity codes, counts, labels |
+
+That pairing does real work at the review gate: the inspector's shorthand is set in mono and
+the proposed rewrite in the report's own serif, so the transformation is visible before a word
+is read. All three are system stacks — an inspector loads this in a basement on one bar of
+signal, and a webfont is a render-blocking round trip for a typeface nobody would notice.
+
+Colour means severity and nothing else. That rules out the usual way of making an interface
+look designed — a brand accent, a coloured header — which is exactly why this one is built
+from type, rule and grid. On a document where a buyer has to spot "recommend prompt
 evaluation" at a glance, a decorative colour competing with the one that carries meaning is
 not a style choice, it is a hazard. Both themes are real: an attic at midday and a crawlspace
-both happen.
+both happen, and the severity hues are re-picked for a dark ground rather than inverted.
 
 ## Report formats
 
