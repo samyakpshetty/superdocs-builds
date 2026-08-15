@@ -9,8 +9,30 @@ import {
   type Proposal,
 } from "./api";
 import { CheckList, Empty, ErrorNote, RailVerdict, SeverityTag, Skeleton } from "./components";
+import { Flagged, ReportShape, WordDiff } from "./insight";
 
 type Screen = "list" | "walk" | "gate" | "export";
+
+/**
+ * Confirmation for actions that would otherwise complete in silence — recording a finding,
+ * accepting a photograph, sending decisions. It is announced politely as well as shown,
+ * because the person using this is often not looking at the screen when it happens.
+ */
+function useToast(): [React.ReactNode, (message: string) => void] {
+  const [message, setMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!message) return;
+    const t = setTimeout(() => setMessage(null), 3200);
+    return () => clearTimeout(t);
+  }, [message]);
+  const node = message ? (
+    <div className="toast" role="status" aria-live="polite">
+      <span aria-hidden="true">✓</span>
+      {message}
+    </div>
+  ) : null;
+  return [node, setMessage];
+}
 
 export default function App() {
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
@@ -102,7 +124,7 @@ function InspectionList({
       <div className="section-head">
         <h1>Inspections</h1>
         <span className="section-head__count">{rows ? `${rows.length} on file` : ""}</span>
-        <div style={{ marginLeft: "auto" }}>
+        <div className="section-head__actions">
           <button className="btn--primary" onClick={() => setCreating((v) => !v)}>
             {creating ? "Cancel" : "New inspection"}
           </button>
@@ -254,6 +276,7 @@ function InspectionWorkspace({
 }) {
   const [inspection, setInspection] = useState<Inspection | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [toast, say] = useToast();
 
   const refresh = useCallback(() => {
     setError(null);
@@ -299,12 +322,18 @@ function InspectionWorkspace({
       </div>
 
       {screen === "walk" && (
-        <Walk inspection={inspection} catalogue={catalogue} onChanged={() => void refresh()} />
+        <Walk
+          inspection={inspection}
+          catalogue={catalogue}
+          onChanged={() => void refresh()}
+          say={say}
+        />
       )}
       {screen === "gate" && (
-        <Gate id={id} catalogue={catalogue} onDecided={() => void refresh()} />
+        <Gate id={id} catalogue={catalogue} onDecided={() => void refresh()} say={say} />
       )}
-      {screen === "export" && <ExportPanel id={id} inspection={inspection} />}
+      {screen === "export" && <ExportPanel id={id} inspection={inspection} say={say} />}
+      {toast}
     </>
   );
 }
@@ -315,10 +344,12 @@ function Walk({
   inspection,
   catalogue,
   onChanged,
+  say,
 }: {
   inspection: Inspection;
   catalogue: Catalogue;
   onChanged: () => void;
+  say: (m: string) => void;
 }) {
   const severityByKey = useMemo(
     () => new Map(catalogue.severities.map((s) => [s.key, s])),
@@ -328,6 +359,11 @@ function Walk({
 
   return (
     <div className="stack">
+      <ReportShape
+        systems={catalogue.systems}
+        severities={catalogue.severities}
+        findings={inspection.findings}
+      />
       <p className="hint">
         Findings are grouped by system in the report, in this order, whatever order you record
         them in.
@@ -343,7 +379,7 @@ function Walk({
                   ? "nothing recorded"
                   : `${findings.length} recorded`}
               </span>
-              <div style={{ marginLeft: "auto" }}>
+              <div className="section-head__actions">
                 <button
                   className="btn--small"
                   onClick={() => setOpenSystem(openSystem === system.key ? null : system.key)}
@@ -359,6 +395,7 @@ function Walk({
                 finding={f}
                 severity={severityByKey.get(f.severity_key)}
                 onChanged={onChanged}
+                say={say}
               />
             ))}
 
@@ -370,6 +407,7 @@ function Walk({
                 onAdded={() => {
                   setOpenSystem(null);
                   onChanged();
+                  say(`Finding recorded under ${system.name}.`);
                 }}
               />
             )}
@@ -384,10 +422,12 @@ function FindingCard({
   finding,
   severity,
   onChanged,
+  say,
 }: {
   finding: Inspection["findings"][number];
   severity: Catalogue["severities"][number] | undefined;
   onChanged: () => void;
+  say: (m: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -438,7 +478,14 @@ function FindingCard({
             setError(null);
             api
               .addPhoto(finding.id, file)
-              .then(onChanged)
+              .then((r) => {
+                onChanged();
+                say(
+                  r.stripped_exif
+                    ? "Photograph added. Location data was removed."
+                    : "Photograph added.",
+                );
+              })
               .catch((err: ApiError) => setError(err.message))
               .finally(() => {
                 setBusy(false);
@@ -567,10 +614,12 @@ function Gate({
   id,
   catalogue,
   onDecided,
+  say,
 }: {
   id: string;
   catalogue: Catalogue;
   onDecided: () => void;
+  say: (m: string) => void;
 }) {
   const [proposals, setProposals] = useState<Proposal[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -600,7 +649,7 @@ function Gate({
           report. Nothing is applied until you decide, and anything that reads as a
           certification is refused before it reaches you.
         </p>
-        <div className="row">
+        <div className="row row--controls">
           <label style={{ maxWidth: 220 }}>
             Precision
             <select value={tier} onChange={(e) => setTier(e.target.value)}>
@@ -622,6 +671,12 @@ function Gate({
                   setProposals(r.proposals);
                   setOps(r.ops_remaining);
                   setApprovals({});
+                  const refused = r.proposals.filter((p) => !p.rail_clean).length;
+                  say(
+                    refused === 0
+                      ? `${r.proposals.length} rewrites proposed.`
+                      : `${r.proposals.length} proposed, ${refused} refused by the language rail.`,
+                  );
                 })
                 .catch((e: ApiError) => setError(e.message))
                 .finally(() => setBusy(null));
@@ -655,8 +710,16 @@ function Gate({
               <div className="diff__text">{p.before}</div>
             </div>
             <div className="diff__side">
-              <span className="diff__label">Proposed for the buyer</span>
-              <div className="diff__text">{p.after}</div>
+              <span className="diff__label">
+                {p.rail_clean ? "Proposed for the buyer — additions marked" : "Proposed — flagged wording marked"}
+              </span>
+              <div className={`diff__text${p.rail_clean ? "" : " diff__text--flagged"}`}>
+                {p.rail_clean ? (
+                  <WordDiff before={p.before} after={p.after} />
+                ) : (
+                  <Flagged text={p.after} breaches={p.breaches ?? []} />
+                )}
+              </div>
             </div>
           </div>
           <RailVerdict clean={p.rail_clean} breaches={p.breaches ?? []} />
@@ -706,6 +769,8 @@ function Gate({
                   .then((r) => {
                     setProposals(r.proposals);
                     onDecided();
+                    const used = r.proposals.filter((p) => p.approved).length;
+                    say(`Decisions sent. ${used} rewrite${used === 1 ? "" : "s"} applied.`);
                   })
                   .catch((e: ApiError) => setError(e.message))
                   .finally(() => setBusy(null));
@@ -740,7 +805,15 @@ function Gate({
 
 /* ---------------------------------------------------------------- export */
 
-function ExportPanel({ id, inspection }: { id: string; inspection: Inspection }) {
+function ExportPanel({
+  id,
+  inspection,
+  say,
+}: {
+  id: string;
+  inspection: Inspection;
+  say: (m: string) => void;
+}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [checks, setChecks] = useState<Check[] | null>(null);
@@ -760,6 +833,11 @@ function ExportPanel({ id, inspection }: { id: string; inspection: Inspection })
         a.download = `${inspection.property.address_line.replace(/\W+/g, "-").toLowerCase()}.${fmt}`;
         a.click();
         URL.revokeObjectURL(url);
+        say(
+          verified
+            ? `${fmt.toUpperCase()} downloaded — every check passed.`
+            : `${fmt.toUpperCase()} downloaded, but some checks failed. See below.`,
+        );
       })
       .catch((e: ApiError) => setError(e.message))
       .finally(() => setBusy(null));
