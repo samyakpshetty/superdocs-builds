@@ -1,0 +1,35 @@
+<h1>{{firm_name}}</h1>
+<p><strong>Home inspection report</strong> &mdash; {{property_address}}</p>
+<p>Inspected by {{inspector_name}}{{licence_suffix}} on {{inspected_on}}.</p>
+
+<h2>How to read this report</h2>
+<p>{{preamble}}</p>
+<p>Findings are grouped by the system they belong to, and within each system the items that
+warrant the soonest attention come first. Every entry records what was observed and what is
+recommended next. Photographs are included so you can see what is being described.</p>
+
+<h2>Severity labels used in this report</h2>
+<!-- region:legend -->
+<p><strong>{{severity_label}}</strong> &mdash; {{severity_description}}</p>
+<!-- /region:legend -->
+
+<h2>What was inspected</h2>
+<p>{{systems_inspected}}</p>
+
+<!-- region:system -->
+<h2>{{system_name}}</h2>
+<p><em>{{system_blurb}}</em></p>
+<p>{{system_summary}}</p>
+<!-- region:finding -->
+<h3>{{severity_label}}: {{finding_title}}</h3>
+<p class="finding-note">{{finding_text}}</p>
+<p><strong>Recommended next step:</strong> {{finding_recommendation}}</p>
+<!-- region:photo -->
+<p><img src="{{photo_url}}" alt="{{photo_caption}}"></p>
+<p><em>{{photo_caption}}</em></p>
+<!-- /region:photo -->
+<!-- /region:finding -->
+<!-- /region:system -->
+
+<h2>Scope and limits of this inspection</h2>
+<p>{{limits}}</p>

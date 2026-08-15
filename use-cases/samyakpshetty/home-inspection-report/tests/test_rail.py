@@ -76,6 +76,12 @@ class TestAllowsRealInspectionLanguage:
             "Safety glazing is present at the patio door.",
             "The pressure relief valve discharge terminates above grade.",
             "Could not be inspected: the crawlspace hatch was blocked by stored items.",
+            # The English verb "warrant", which an inspection report uses constantly.
+            "An observation that warrants evaluation and likely repair.",
+            "The items that warrant the soonest attention come first.",
+            "This finding warrants further review by a specialist.",
+            # The report's own standing disclaimer must survive its own rail.
+            "It is not a certification, warranty or guarantee of the condition of the property.",
         ],
     )
     def test_observational_prose_passes(self, text: str) -> None:

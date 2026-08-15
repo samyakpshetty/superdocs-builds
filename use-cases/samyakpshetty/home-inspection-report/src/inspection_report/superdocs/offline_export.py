@@ -88,21 +88,31 @@ class ImageResolver:
 _HEADING_SIZE = {"h1": 22, "h2": 16, "h3": 13, "h4": 12}
 
 
+def _fit(data: bytes, max_w: int, max_h: int) -> bytes:
+    """Scale a photograph down to about the size it will be printed at."""
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as image:
+        rgb = image.convert("RGB")
+        rgb.thumbnail((max_w, max_h))
+        buf = io.BytesIO()
+        rgb.save(buf, format="JPEG", quality=82, optimize=True)
+        return buf.getvalue()
+
+
 def to_docx(html: str, images: ImageResolver) -> bytes:
     """A real Word document, with the photographs embedded as real image parts."""
     from docx import Document
-    from docx.shared import Inches, Pt
+    from docx.shared import Inches
 
     doc = Document()
     for block in read_blocks(html):
         if block.tag == "img":
             data = images.get(block.image_url)
             if data:
+                # As in the PDF path: `alt` is accessibility text, and the format supplies
+                # its own visible caption.
                 doc.add_picture(io.BytesIO(data), width=Inches(4.5))
-                if block.image_alt:
-                    caption = doc.add_paragraph(block.image_alt)
-                    caption.runs[0].italic = True
-                    caption.runs[0].font.size = Pt(9)
             continue
         if block.tag in _HEADING_SIZE:
             doc.add_heading(block.text, level=int(block.tag[1]))
@@ -139,11 +149,13 @@ def to_pdf(html: str, images: ImageResolver) -> bytes:
             if y + box_h > height - margin:
                 new_page()
             rect = fitz.Rect(margin, y, margin + 220, y + box_h)
-            page.insert_image(rect, stream=data)
-            y += box_h + 6
-            if block.image_alt:
-                page.insert_text((margin, y), block.image_alt[:110], fontsize=8, fontname="helv")
-                y += 16
+            # Downscale to roughly the printed size first. Inserting a full-resolution
+            # photograph stores it uncompressed, which turned an eight-photo report into an
+            # 8 MB file for 57 KB of actual image data.
+            page.insert_image(rect, stream=_fit(data, 220 * 2, int(box_h) * 2))
+            # `alt` is for screen readers, not for drawing: the report format already carries
+            # a visible caption paragraph, and painting both prints every caption twice.
+            y += box_h + 10
             continue
 
         size = _HEADING_SIZE.get(block.tag, 10.5)

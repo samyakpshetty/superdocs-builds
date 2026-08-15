@@ -62,6 +62,26 @@ _REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+# Field shorthand -> plain English. Ordered, applied in sequence.
+_EXPANSIONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(p, re.IGNORECASE), r)
+    for p, r in (
+        (r"^S\b", "south"),
+        (r"^N\b", "north"),
+        (r"\bdbl\b", "double"),
+        (r"\borig\b", "original"),
+        (r"\bapprox\b", "approximately"),
+        (r"~", "approximately "),
+        (r"\s*@\s*", " at the "),
+        (r"(\d+)\s*in\b", r"\1 inches"),
+        (r"(\d+)\s*ft\b", r"\1 feet"),
+        (r"\bw/\s*", "with "),
+        (r"\bno\b", "no"),
+        (r",\s*", ", "),
+    )
+)
+
+
 @dataclass
 class _Session:
     html: str = ""
@@ -192,9 +212,15 @@ class FakeSuperDocsClient:
         for pattern, replacement in _REWRITES:
             if pattern.search(text):
                 return replacement
-        # The well-behaved path: expand shorthand into a plain observational sentence.
-        expanded = text.rstrip(".")
-        return f"Found {expanded[0].lower()}{expanded[1:]}. Recommend further evaluation."
+        # The well-behaved path: expand the shorthand an inspector actually types into a
+        # sentence a buyer can read. Deterministic, and close enough to what the live
+        # service produces that the offline demo shows the real transformation rather than
+        # a placeholder.
+        out = text.rstrip(" .")
+        for pattern, replacement in _EXPANSIONS:
+            out = pattern.sub(replacement, out)
+        out = " ".join(out.split())
+        return f"Found {out[0].lower()}{out[1:]}."
 
     def get_job(self, job_id: str) -> Job:
         job = self.jobs.get(job_id)

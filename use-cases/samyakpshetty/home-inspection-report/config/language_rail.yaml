@@ -36,6 +36,16 @@ allow:
   - '\bno access\b'
   - '\bcould not be inspected\b'
   - '\bnot inspected\b'
+  # Disclaiming a certification is the opposite of making one. The report's standing
+  # preamble says so in as many words, and the rail must not refuse the sentence whose
+  # whole job is to deny the claim.
+  - '\bis not a certification, warranty or guarantee\b'
+  - '\bnot a certification\b'
+  # "Warrants evaluation", "warrant the soonest attention" — the ordinary English verb
+  # meaning "deserves", not a warranty. Recognised by what it governs anywhere in the same
+  # sentence, rather than by listing the phrasings, so a new one does not reopen the hole.
+  # "The seller warrants the water heater" has no such object and still breaches.
+  - '\bwarrants?\b(?=[^.]{0,48}\b(evaluation|further|review|attention|investigation|monitoring|repair|replacement|inspection|scrutiny)\b)'
 
 banned:
   - id: certification
