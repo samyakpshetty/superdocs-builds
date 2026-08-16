@@ -136,7 +136,7 @@ p { margin: 0; }
 
 /* The label voice: mono, small, letterspaced. Does the work a coloured chip would do in a
    product that could afford to spend colour on decoration. */
-.overline, .diff__label, .shape__head, .section-num {
+.diff__label, .shape__head, .section-num {
   font-family: var(--mono);
   font-size: var(--step--2);
   text-transform: uppercase;
@@ -218,8 +218,9 @@ p { margin: 0; }
 
 /* ----------------------------------------------------------------- blocks */
 
+/* A "card" is no longer a box — it is a block of the page, separated from the next by a
+   rule and a gap. Kept as a class because it still marks a block in the markup. */
 .card { background: transparent; border: 0; border-radius: 0; padding: 0; }
-.card--flat, .card--raised { box-shadow: none; }
 
 /* The one place a real container earns itself: something being edited. */
 .panel {

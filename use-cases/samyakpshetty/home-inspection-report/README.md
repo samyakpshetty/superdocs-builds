@@ -67,7 +67,7 @@ Building 14 Alder Lane, Fairhaven, FH8 2QR — 8 findings, 8 photographs, provid
     [PASS] every finding is under its own system — 8 findings
     [PASS] severity labels are present — 4 distinct labels
     [PASS] photographs are embedded in the file — 8 embedded, 8 expected
-    [PASS] no certification language in the exported file
+    [PASS] no certification language the system produced
     [PASS] no photo URLs leaked into the document text
 ```
 
@@ -86,7 +86,7 @@ make check
 ```
 
 ruff + `ruff format --check` + `mypy --strict` + the full test suite + the front end's
-TypeScript: **145 tests, none of which need an API key.**
+TypeScript: **147 tests, none of which need an API key.**
 
 Other targets: `make verify` re-checks the files already in `exports/`, and
 `docker compose run --rm --no-deps api python -m inspection_report.cli formats` lists the
