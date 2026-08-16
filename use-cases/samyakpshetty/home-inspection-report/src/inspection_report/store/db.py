@@ -130,10 +130,17 @@ def apply_schema(conn: psycopg.Connection[dict[str, Any]]) -> None:
 
 
 def save_inspection(conn: psycopg.Connection[dict[str, Any]], inspection: Inspection) -> None:
-    """Upsert an inspection and everything under it, in one transaction.
+    """Upsert an inspection and its findings, in one transaction.
 
-    Findings and photographs are rewritten wholesale rather than diffed: an inspection is
-    small, and a partial write is a report missing a finding.
+    Findings are **upserted**, and only the ones that are genuinely gone are deleted. That
+    distinction is the whole point: ``photos.finding_id`` is ``ON DELETE CASCADE``, so
+    clearing the findings and re-inserting them — which is what this used to do — destroyed
+    every photograph on the inspection. Re-inserting a finding with the same id does not
+    bring its photographs back.
+
+    It fired on the ordinary path: attach a photograph to a finding, record the next
+    finding, and the first photograph was gone. Approving decisions and exporting did the
+    same thing, because both save the inspection on their way through.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -168,13 +175,26 @@ def save_inspection(conn: psycopg.Connection[dict[str, Any]], inspection: Inspec
                 "stage": str(inspection.stage),
             },
         )
-        cur.execute("DELETE FROM findings WHERE inspection_id = %s", (inspection.id,))
+        # Remove only what is no longer here. An empty list deletes every finding, which is
+        # the correct reading of "this inspection now has none".
+        cur.execute(
+            "DELETE FROM findings WHERE inspection_id = %s AND NOT (id = ANY(%s))",
+            (inspection.id, [f.id for f in inspection.findings]),
+        )
         for position, finding in enumerate(inspection.findings):
             cur.execute(
                 """
                 INSERT INTO findings (id, inspection_id, system_key, severity_key, location,
                     observation, recommendation, plain_language, position)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    system_key = EXCLUDED.system_key,
+                    severity_key = EXCLUDED.severity_key,
+                    location = EXCLUDED.location,
+                    observation = EXCLUDED.observation,
+                    recommendation = EXCLUDED.recommendation,
+                    plain_language = EXCLUDED.plain_language,
+                    position = EXCLUDED.position
                 """,
                 (
                     finding.id,

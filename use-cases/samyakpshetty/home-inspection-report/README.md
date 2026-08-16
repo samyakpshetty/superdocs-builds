@@ -97,7 +97,8 @@ make check
 ```
 
 ruff + `ruff format --check` + `mypy --strict` + the full test suite + the front end's
-TypeScript: **147 tests, none of which need an API key.**
+TypeScript: **153 tests, none of which need an API key.** Four of them need a Postgres and
+skip without one; `make test-db` runs those against the database `docker compose up` starts.
 
 Other targets: `make verify` re-checks the files already in `exports/`, and
 `docker compose run --rm --no-deps api python -m inspection_report.cli formats` lists the

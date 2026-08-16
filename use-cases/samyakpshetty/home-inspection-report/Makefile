@@ -5,7 +5,7 @@
 COMPOSE := docker compose
 RUN := $(COMPOSE) run --rm --no-deps api
 
-.PHONY: help build lint fmt typecheck typecheck-web test check demo verify seed up down clean
+.PHONY: help build lint fmt typecheck typecheck-web test check demo verify test-db seed up down clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -38,6 +38,9 @@ demo: build ## Build the sample report end to end on fakes — no key, no cost
 
 verify: build ## Read the exported files back and prove the grouping
 	$(RUN) python -m inspection_report.cli verify
+
+test-db: build ## Run the tests that need a real Postgres (the rest of the suite does not)
+	$(COMPOSE) run --rm api pytest -m postgres -q
 
 seed: build ## Put the sample property in the database so the UI opens onto real data
 	$(COMPOSE) run --rm api python -m inspection_report.cli seed --reset
