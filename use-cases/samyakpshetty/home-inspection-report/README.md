@@ -200,6 +200,17 @@ The inspection systems, the severity scale and the language rail are all data to
 `config/`. Adding a seventh system, grading on four levels instead of five, or operating
 under a firm's own wording rules is a change to YAML and to nothing else.
 
+## Schema changes
+
+The schema is a set of ordered SQL files in `migrations/`, applied once each and recorded
+with a checksum in `schema_migrations`. A migration that has run is immutable — if the file
+changes, the next start fails and names it, rather than leaving two databases disagreeing
+about what `0002` means. Two API processes booting together take an advisory lock, so one
+applies and the other finds nothing to do.
+
+To change the schema, add the next numbered file. Nothing else needs editing; the runner
+picks it up on the next start.
+
 ## SuperDocs surfaces used
 
 | Surface | How |

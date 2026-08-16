@@ -172,3 +172,70 @@ class TestConcurrentWritesDoNotEraseEachOther:
         reloaded = db.load_inspection(conn, inspection.id)
         assert reloaded is not None
         assert any(f.observation == "arrived later" for f in reloaded.findings)
+
+
+class TestMigrations:
+    """Ordered SQL files, applied once, and immutable afterwards.
+
+    The schema used to be a single CREATE TABLE IF NOT EXISTS block run on every start,
+    which works exactly once: a second release cannot add a column, because the table is
+    already there and the statement does nothing.
+    """
+
+    def _dir(self, tmp_path):  # type: ignore[no-untyped-def]
+        import shutil
+        from pathlib import Path
+
+        target = tmp_path / "migrations"
+        target.mkdir()
+        shutil.copy(Path("migrations/0001_initial.sql"), target / "0001_initial.sql")
+        return target
+
+    def test_a_second_release_can_add_a_column(self, conn, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from inspection_report.store import migrate
+
+        directory = self._dir(tmp_path)
+        migrate.apply(conn, directory)
+        (directory / "0002_probe.sql").write_text(
+            "ALTER TABLE inspections ADD COLUMN IF NOT EXISTS probe_column TEXT;"
+        )
+        try:
+            assert migrate.apply(conn, directory) == ["0002_probe.sql"]
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 AS ok FROM information_schema.columns "
+                    "WHERE table_name='inspections' AND column_name='probe_column'"
+                )
+                assert cur.fetchone() is not None
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("ALTER TABLE inspections DROP COLUMN IF EXISTS probe_column")
+                cur.execute("DELETE FROM schema_migrations WHERE name = '0002_probe.sql'")
+            conn.commit()
+
+    def test_applying_twice_runs_nothing_the_second_time(self, conn, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from inspection_report.store import migrate
+
+        directory = self._dir(tmp_path)
+        migrate.apply(conn, directory)
+        assert migrate.apply(conn, directory) == []
+
+    def test_editing_an_applied_migration_is_refused(self, conn, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Two deployments must never disagree about what a migration contains."""
+        from inspection_report.store import migrate
+
+        directory = self._dir(tmp_path)
+        migrate.apply(conn, directory)
+        (directory / "0001_initial.sql").write_text("SELECT 1;")
+
+        with pytest.raises(migrate.MigrationError) as exc:
+            migrate.apply(conn, directory)
+        assert "0001_initial.sql" in str(exc.value)
+        assert "immutable" in str(exc.value)
+
+    def test_a_missing_directory_says_what_to_do(self, conn, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from inspection_report.store import migrate
+
+        with pytest.raises(migrate.MigrationError) as exc:
+            migrate.apply(conn, tmp_path / "nope")
+        assert "MIGRATIONS_DIR" in str(exc.value)

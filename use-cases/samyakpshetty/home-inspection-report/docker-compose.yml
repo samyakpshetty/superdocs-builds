@@ -39,6 +39,7 @@ services:
       - ./src:/app/src
       - ./tests:/app/tests
       - ./config:/app/config
+      - ./migrations:/app/migrations
       - ./templates:/app/templates
       - ./sample:/app/sample
       # Exports must land where the host can see them: a --rm container's writes outside a

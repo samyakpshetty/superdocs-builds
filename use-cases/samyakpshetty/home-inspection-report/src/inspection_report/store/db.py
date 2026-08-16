@@ -120,10 +120,16 @@ def connect(url: str | None = None) -> Iterator[psycopg.Connection[dict[str, Any
 
 
 def apply_schema(conn: psycopg.Connection[dict[str, Any]]) -> None:
-    """Idempotent. Safe on every start."""
-    with conn.cursor() as cur:
-        cur.execute(SCHEMA)
-    conn.commit()
+    """Bring the schema up to date. Idempotent, and safe when two processes start together.
+
+    Delegates to the migration runner. ``SCHEMA`` below is kept as the readable description
+    of the current shape — it is what ``migrations/0001_initial.sql`` contains — but it is no
+    longer what creates anything, because a `CREATE TABLE IF NOT EXISTS` block cannot add a
+    column to a database that already has the table.
+    """
+    from inspection_report.store import migrate
+
+    migrate.apply(conn)
 
 
 # ------------------------------------------------------------------ writes

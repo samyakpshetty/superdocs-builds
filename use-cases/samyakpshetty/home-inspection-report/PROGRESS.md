@@ -237,10 +237,10 @@ database. What is not ready is the operational shape around it.
    and it is transactional, which is why it was the right call for a build that has to run
    from one `docker compose up` — but the production shape is object storage with the
    database holding keys.
-4. **The 8 MB upload cap is below what modern phones produce.** A 48-megapixel photograph
-   routinely exceeds it, and nothing downscales on the way in — only the thumbnail is
-   derived. An inspector would hit this on their own camera. Wants a resize before the cap
-   rather than a rejection at it.
+4. ~~**The 8 MB upload cap is below what modern phones produce.**~~ **Fixed**, and it was
+   worse than a cap: HEIC — the iPhone camera default since iOS 11 — was refused outright.
+   HEIC is decoded and stored as JPEG, uploads are accepted to 25 MB and downscaled to
+   2048px before storage.
 5. **One firm, one process, no queue.** No multi-tenancy, no background workers, no retry of
    a failed AI pass beyond the transport-level backoff, and no metrics or alerting beyond
    structured logs.

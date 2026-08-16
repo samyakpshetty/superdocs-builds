@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -e ".[dev]"
 # is self-contained for a clean `docker build`.
 COPY tests ./tests
 COPY config ./config
+COPY migrations ./migrations
 COPY templates ./templates
 COPY sample ./sample
 
