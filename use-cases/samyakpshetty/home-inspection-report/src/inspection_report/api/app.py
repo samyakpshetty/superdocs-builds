@@ -227,8 +227,7 @@ def add_finding(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     finding = Finding(**body.model_dump())
-    inspection.findings.append(finding)
-    db.save_inspection(conn, inspection)
+    db.insert_finding(conn, inspection_id=inspection_id, finding=finding)
     return {"id": str(finding.id)}
 
 

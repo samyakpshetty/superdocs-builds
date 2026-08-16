@@ -129,10 +129,51 @@ def apply_schema(conn: psycopg.Connection[dict[str, Any]]) -> None:
 # ------------------------------------------------------------------ writes
 
 
-def save_inspection(conn: psycopg.Connection[dict[str, Any]], inspection: Inspection) -> None:
+def insert_finding(
+    conn: psycopg.Connection[dict[str, Any]], *, inspection_id: UUID, finding: Finding
+) -> None:
+    """Append one finding, touching nothing else.
+
+    Recording a finding used to load the whole inspection, append in memory, and write the
+    set back. Two requests arriving together each wrote their own stale snapshot and the
+    later one erased the earlier one's finding — and, through the photo cascade, its
+    photographs. Six concurrent adds left two findings and one photograph out of eight.
+    An append is one row; it is written as one row.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT coalesce(max(position), -1) + 1 AS next FROM findings WHERE inspection_id = %s",
+            (inspection_id,),
+        )
+        row = cur.fetchone()
+        cur.execute(
+            """
+            INSERT INTO findings (id, inspection_id, system_key, severity_key, location,
+                observation, recommendation, plain_language, position)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                finding.id,
+                inspection_id,
+                finding.system_key,
+                finding.severity_key,
+                finding.location,
+                finding.observation,
+                finding.recommendation,
+                finding.plain_language,
+                int(row["next"]) if row else 0,
+            ),
+        )
+    conn.commit()
+
+
+def save_inspection(
+    conn: psycopg.Connection[dict[str, Any]], inspection: Inspection, *, prune: bool = False
+) -> None:
     """Upsert an inspection and its findings, in one transaction.
 
-    Findings are **upserted**, and only the ones that are genuinely gone are deleted. That
+    Findings are **upserted**. Removing one requires ``prune=True``, from a caller that owns
+    the whole set. That
     distinction is the whole point: ``photos.finding_id`` is ``ON DELETE CASCADE``, so
     clearing the findings and re-inserting them — which is what this used to do — destroyed
     every photograph on the inspection. Re-inserting a finding with the same id does not
@@ -175,12 +216,15 @@ def save_inspection(conn: psycopg.Connection[dict[str, Any]], inspection: Inspec
                 "stage": str(inspection.stage),
             },
         )
-        # Remove only what is no longer here. An empty list deletes every finding, which is
-        # the correct reading of "this inspection now has none".
-        cur.execute(
-            "DELETE FROM findings WHERE inspection_id = %s AND NOT (id = ANY(%s))",
-            (inspection.id, [f.id for f in inspection.findings]),
-        )
+        # Only a caller that genuinely owns the whole set may prune, and it has to say so.
+        # Everything else — approving decisions, exporting, moving the stage on — holds a
+        # snapshot that another request may already have added to, and deleting from that
+        # snapshot is how one request erases another's work.
+        if prune:
+            cur.execute(
+                "DELETE FROM findings WHERE inspection_id = %s AND NOT (id = ANY(%s))",
+                (inspection.id, [f.id for f in inspection.findings]),
+            )
         for position, finding in enumerate(inspection.findings):
             cur.execute(
                 """

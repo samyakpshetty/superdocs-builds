@@ -193,7 +193,7 @@ def seed(reset: bool) -> None:
             conn.commit()
             click.echo(f"  removed existing {inspection.property.address_line!r} inspections")
 
-        db.save_inspection(conn, inspection)
+        db.save_inspection(conn, inspection, prune=True)
         stored = 0
         for finding in inspection.findings:
             for position, photo in enumerate(finding.photos):

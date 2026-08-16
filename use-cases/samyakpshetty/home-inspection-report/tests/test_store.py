@@ -105,8 +105,70 @@ class TestPhotographsSurviveAnOrdinaryDay:
         inspection = _seeded(conn)
         keep = inspection.findings[0]
         inspection.findings = [keep]
-        db.save_inspection(conn, inspection)
+        db.save_inspection(conn, inspection, prune=True)
 
         reloaded = db.load_inspection(conn, inspection.id)
         assert reloaded is not None
         assert [f.id for f in reloaded.findings] == [keep.id]
+
+
+class TestConcurrentWritesDoNotEraseEachOther:
+    """Two requests arriving together must both survive.
+
+    Recording a finding used to load the inspection, append in memory and write the set
+    back, so the later writer erased the earlier one's finding — and its photographs with
+    it. Six concurrent adds left two findings out of eight.
+    """
+
+    def test_concurrent_appends_all_land(self, conn) -> None:  # type: ignore[no-untyped-def]
+        import threading
+
+        inspection = _seeded(conn)
+        before = len(inspection.findings)
+        errors: list[BaseException] = []
+
+        def add(n: int) -> None:
+            try:
+                # A connection per thread, as the server has a connection per request.
+                with db.connect() as own:
+                    db.insert_finding(
+                        own,
+                        inspection_id=inspection.id,
+                        finding=Finding(
+                            system_key="roof",
+                            severity_key="monitor",
+                            observation=f"concurrent {n}",
+                        ),
+                    )
+            except BaseException as exc:  # pragma: no cover - reported, not swallowed
+                errors.append(exc)
+
+        threads = [threading.Thread(target=add, args=(i,)) for i in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, errors
+        reloaded = db.load_inspection(conn, inspection.id)
+        assert reloaded is not None
+        assert len(reloaded.findings) == before + 6, "a concurrent write erased another"
+        assert _photo_count(conn, inspection) == 1, "a concurrent write destroyed a photograph"
+
+    def test_saving_the_inspection_does_not_prune_by_default(self, conn) -> None:  # type: ignore[no-untyped-def]
+        """Exporting holds a snapshot; it must not delete what arrived after it was taken."""
+        inspection = _seeded(conn)
+        stale = db.load_inspection(conn, inspection.id)
+        assert stale is not None
+
+        db.insert_finding(
+            conn,
+            inspection_id=inspection.id,
+            finding=Finding(system_key="roof", severity_key="monitor", observation="arrived later"),
+        )
+        # The stale snapshot is written back, as `decide` and `export` both do.
+        db.save_inspection(conn, stale)
+
+        reloaded = db.load_inspection(conn, inspection.id)
+        assert reloaded is not None
+        assert any(f.observation == "arrived later" for f in reloaded.findings)

@@ -273,6 +273,10 @@ Where the brief or the API was silent, I made a call and recorded it here.
   approved rewrites. Every approved rewrite is now read back out of the exported file and the
   export is repeated until they are present. Exports cost nothing, which is what makes
   re-reading the right answer.
+- **Concurrent writes do not erase each other.** Recording a finding inserts one row rather
+  than rewriting the inspection's whole set from a snapshot, and only a caller that owns the
+  whole set may prune. Six requests arriving together used to leave two findings out of
+  eight; they all land now, and a test holds it against a real database.
 - **A finished report stays exportable.** The session is where the document lives on
   SuperDocs' side, and a session does not outlive a restart. Every finding, every approved
   rewrite and every photograph is in our own database, so the document is rebuilt from there
