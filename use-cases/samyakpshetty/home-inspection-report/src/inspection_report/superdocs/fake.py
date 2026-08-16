@@ -11,16 +11,31 @@ the test suite exercises. Two rules govern it:
    note, it produces certification language on some inputs — because the live service did
    exactly that on this build's first sample. If the offline suite only ever saw well-behaved
    output, the language rail would never be exercised where it matters.
+3. **Its state is shared the way a server's is.** SuperDocs is another machine: every process
+   that holds a key sees the same sessions and jobs. An in-memory dict is not that, and the
+   difference is invisible until the work is split across processes — which it is, because
+   the rewrite pass runs in the worker and the approval arrives at the API. The worker's job
+   did not exist for the API, so every approval failed with ``unknown job``. Set
+   ``FAKE_STATE_DIR`` and the state lives on a shared volume under a file lock; leave it unset
+   and the fake is purely in-memory, which is what the keyless suite wants.
 """
 
 from __future__ import annotations
 
+import base64
+import contextlib
+import fcntl
+import functools
 import hashlib
 import itertools
 import json
 import os
 import re
+import tempfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Concatenate, cast
 
 from inspection_report.store.blobs import BlobError, FilesystemBlobStore
 from inspection_report.superdocs.base import (
@@ -98,6 +113,27 @@ def _requested_template(message: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _shared_state[**P, R](
+    method: Callable[Concatenate[FakeSuperDocsClient, P], R],
+) -> Callable[Concatenate[FakeSuperDocsClient, P], R]:
+    """Run one operation against the shared state, when there is one.
+
+    A decorator rather than a block inside each method, so that what a method does and the
+    fact that it is a server operation stay separate things to read. Only the operations the
+    protocol exposes are marked: the private helpers they call run inside the lock already,
+    and taking it twice would have the inner call write a half-finished state back.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self: FakeSuperDocsClient, *args: P.args, **kwargs: P.kwargs) -> R:
+        with self._shared():
+            return method(self, *args, **kwargs)
+
+    # `functools.wraps` types its result as `_Wrapped`, which is callable with exactly this
+    # signature but is not the alias mypy is looking for.
+    return cast("Callable[Concatenate[FakeSuperDocsClient, P], R]", wrapper)
+
+
 @dataclass
 class _Session:
     html: str = ""
@@ -125,17 +161,115 @@ class FakeSuperDocsClient:
     images: ImageResolver = field(default_factory=ImageResolver)
     ops_charged: int = 0
     ops_budget: int = 10_000
-    _ids: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
+    # Where the shared state lives, when there is one. Unset means in-memory only.
+    state_dir: str | None = field(default_factory=lambda: os.environ.get("FAKE_STATE_DIR"))
+    # A plain integer rather than a counter, because it has to survive being written down.
+    # It is shared, so two processes cannot mint the same job id.
+    issued: int = 0
 
     def __post_init__(self) -> None:
         # The resolver asks the store for anything this process did not upload itself.
         self.images.lookup = self._recall_image
 
     def _next(self, prefix: str) -> str:
-        return f"{prefix}-{next(self._ids):04d}"
+        self.issued += 1
+        return f"{prefix}-{self.issued:04d}"
+
+    # ----------------------------------------------------------- shared state
+
+    @contextlib.contextmanager
+    def _shared(self) -> Iterator[None]:
+        """Hold the shared state for one operation: lock, read, act, write, unlock.
+
+        The lock is held across the whole operation rather than around the read and the write
+        separately, because the operations are read-modify-write — two processes approving at
+        once would otherwise each start from the state before the other.
+
+        Written back in a ``finally``: an operation that raises part-way has still changed
+        what a server would have changed, and a fake that quietly rolls back would be more
+        forgiving than the service it stands in for.
+        """
+        if not self.state_dir:
+            yield
+            return
+        directory = Path(self.state_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        state = directory / "state.json"
+        with open(directory / "state.lock", "w") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                self._restore(state)
+                yield
+            finally:
+                try:
+                    self._persist(state)
+                finally:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def _restore(self, path: Path) -> None:
+        try:
+            raw = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return  # Nothing written yet, or a truncated file: start from what we hold.
+        self.sessions = {
+            k: _Session(html=v["html"], version=v["version"]) for k, v in raw["sessions"].items()
+        }
+        self.jobs = {
+            k: _Job(
+                job_id=v["job_id"],
+                session_id=v["session_id"],
+                status=JobStatus(v["status"]),
+                diffs=[ChunkDiff.model_validate(d) for d in v["diffs"]],
+                approved=v["approved"],
+                document_html=v["document_html"],
+            )
+            for k, v in raw["jobs"].items()
+        }
+        self.templates = {k: TemplateRef.model_validate(v) for k, v in raw["templates"].items()}
+        self.template_bytes = {
+            k: base64.b64decode(v) for k, v in raw.get("template_bytes", {}).items()
+        }
+        self.ops_charged = raw["ops_charged"]
+        self.issued = raw["issued"]
+
+    def _persist(self, path: Path) -> None:
+        payload = {
+            "sessions": {
+                k: {"html": v.html, "version": v.version} for k, v in self.sessions.items()
+            },
+            "jobs": {
+                k: {
+                    "job_id": v.job_id,
+                    "session_id": v.session_id,
+                    "status": str(v.status),
+                    "diffs": [d.model_dump() for d in v.diffs],
+                    "approved": v.approved,
+                    "document_html": v.document_html,
+                }
+                for k, v in self.jobs.items()
+            },
+            "templates": {k: v.model_dump() for k, v in self.templates.items()},
+            "template_bytes": {
+                k: base64.b64encode(v).decode() for k, v in self.template_bytes.items()
+            },
+            "ops_charged": self.ops_charged,
+            "issued": self.issued,
+        }
+        # Written to a neighbouring file and renamed, so a reader never sees half a document.
+        # Renames are atomic within a directory; writing in place is not.
+        handle, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(handle, "w") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
 
     # ------------------------------------------------------- the minimum contract
 
+    @_shared_state
     def upload_document(self, *, document_html: str, session_id: str) -> UploadResult:
         counter = itertools.count(1)
 
@@ -164,6 +298,7 @@ class FakeSuperDocsClient:
             version_id=f"v{session.version}",
         )
 
+    @_shared_state
     def chat_async(
         self,
         *,
@@ -303,6 +438,7 @@ class FakeSuperDocsClient:
         out = " ".join(out.split())
         return f"Found {out[0].lower()}{out[1:]}."
 
+    @_shared_state
     def get_job(self, job_id: str) -> Job:
         job = self.jobs.get(job_id)
         if job is None:
@@ -321,6 +457,7 @@ class FakeSuperDocsClient:
             ),
         )
 
+    @_shared_state
     def approve(
         self, *, session_id: str, decisions: list[ApprovalDecision], job_id: str
     ) -> ApproveResult:
@@ -357,6 +494,7 @@ class FakeSuperDocsClient:
             status="batch_complete", applied_count=applied, denied_count=denied, job_id=job_id
         )
 
+    @_shared_state
     def export(
         self, *, session_id: str, fmt: str = "docx", options: ExportOptions | None = None
     ) -> ExportResult:
@@ -376,6 +514,7 @@ class FakeSuperDocsClient:
 
     # -------------------------------------------------- images and templates
 
+    @_shared_state
     def upload_image(
         self, *, data: bytes, filename: str, content_type: str = "image/png"
     ) -> ImageUpload:
@@ -412,6 +551,7 @@ class FakeSuperDocsClient:
         except BlobError:
             return None
 
+    @_shared_state
     def upload_template(self, *, data: bytes, filename: str) -> TemplateRef:
         tid = hashlib.sha1(data).hexdigest()[:36]
         ref = TemplateRef(
@@ -425,13 +565,16 @@ class FakeSuperDocsClient:
         self.template_bytes[tid] = data
         return ref
 
+    @_shared_state
     def ops_remaining(self) -> int | None:
         """The offline budget, mirroring the live promotional bucket."""
         return max(0, self.ops_budget - self.ops_charged)
 
+    @_shared_state
     def list_templates(self) -> list[TemplateRef]:
         return sorted(self.templates.values(), key=lambda t: t.name)
 
+    @_shared_state
     def delete_template(self, template_id: str) -> None:
         if template_id not in self.templates:
             raise SuperDocsError(f"unknown template {template_id!r}")
@@ -440,6 +583,7 @@ class FakeSuperDocsClient:
 
     # ------------------------------------------------------------- operational
 
+    @_shared_state
     def continue_job(self, *, session_id: str, job_id: str, keep_going: bool) -> None:
         job = self.jobs.get(job_id)
         if job is None:

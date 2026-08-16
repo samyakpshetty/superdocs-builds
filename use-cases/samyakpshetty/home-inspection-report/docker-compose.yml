@@ -33,6 +33,9 @@ services:
       PROVIDER: ${PROVIDER:-fake}
       PHOTO_STORE_DIR: /app/data/photos
       FAKE_IMAGE_DIR: /app/data/fake-images
+      # The fake stands in for another machine, so its sessions and jobs have to be reachable
+      # from every process that talks to it — the worker proposes, this container approves.
+      FAKE_STATE_DIR: /app/data/fake-state
       SUPERDOCS_API_KEY: ${SUPERDOCS_API_KEY:-}
       LOG_FORMAT: ${LOG_FORMAT:-json}
     ports:
@@ -46,6 +49,7 @@ services:
       # survive `docker compose down` the way the database does.
       - photo-data:/app/data/photos
       - fake-image-data:/app/data/fake-images
+      - fake-state-data:/app/data/fake-state
       - ./templates:/app/templates
       - ./sample:/app/sample
       # Exports must land where the host can see them: a --rm container's writes outside a
@@ -68,6 +72,7 @@ services:
       SUPERDOCS_API_KEY: ${SUPERDOCS_API_KEY:-}
       PHOTO_STORE_DIR: /app/data/photos
       FAKE_IMAGE_DIR: /app/data/fake-images
+      FAKE_STATE_DIR: /app/data/fake-state
       LOG_FORMAT: ${LOG_FORMAT:-json}
     volumes:
       - ./src:/app/src
@@ -76,6 +81,7 @@ services:
       - ./migrations:/app/migrations
       - photo-data:/app/data/photos
       - fake-image-data:/app/data/fake-images
+      - fake-state-data:/app/data/fake-state
     working_dir: /app
     command: ["python", "-m", "inspection_report.worker"]
 
@@ -96,3 +102,4 @@ volumes:
   db-data:
   photo-data:
   fake-image-data:
+  fake-state-data:

@@ -21,7 +21,7 @@ from inspection_report.superdocs.base import (
 )
 from inspection_report.superdocs.fake import FakeSuperDocsClient
 from inspection_report.superdocs.live import LiveSuperDocsClient
-from inspection_report.superdocs.models import ApprovalDecision, ExportOptions
+from inspection_report.superdocs.models import ApprovalDecision, ExportOptions, JobStatus
 
 DOC = (
     "<h1>14 Alder Lane</h1><h2>Roof</h2>"
@@ -336,3 +336,74 @@ class TestTheAuditTrailHasOneRowPerProposal:
         a = uuid5(_PROPOSAL_NS, f"{UUID(int=1)}:chg-abc")
         b = uuid5(_PROPOSAL_NS, f"{UUID(int=2)}:chg-abc")
         assert a != b
+
+
+class TestTheFakeIsSharedTheWayAServerIs:
+    """SuperDocs is another machine; two of our processes talking to it see one state.
+
+    The fake was a dict in one process, and nothing noticed until the rewrite pass moved to
+    the worker: it created the job, the API received the approval, and the API's fake had
+    never heard of the job. Every approval in the running application failed with
+    ``unknown job 'job-0001'`` while every test stayed green, because the tests — and the CLI
+    — do the whole round in one process.
+    """
+
+    def test_a_job_from_one_process_can_be_approved_by_another(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        worker = FakeSuperDocsClient(state_dir=str(tmp_path))
+        worker.upload_document(document_html=DOC, session_id="s1")
+        job_id = worker.chat_async(session_id="s1", message="rewrite")
+
+        # A separate instance is what a separate process has: nothing is shared in memory.
+        api = FakeSuperDocsClient(state_dir=str(tmp_path))
+        diffs = api.get_job(job_id).chunk_diffs
+        assert diffs, "the job the worker created must be visible to the API"
+
+        result = api.approve(
+            session_id="s1",
+            job_id=job_id,
+            decisions=[ApprovalDecision(change_id=diffs[0].change_id, approved=True)],
+        )
+        assert result.applied_count == 1
+
+    def test_the_decision_is_visible_to_the_process_that_proposed_it(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Approving must change the document every process sees, not just the deciding one."""
+        worker = FakeSuperDocsClient(state_dir=str(tmp_path))
+        worker.upload_document(document_html=DOC, session_id="s1")
+        job_id = worker.chat_async(session_id="s1", message="rewrite")
+        diffs = worker.get_job(job_id).chunk_diffs
+
+        api = FakeSuperDocsClient(state_dir=str(tmp_path))
+        api.approve(
+            session_id="s1",
+            job_id=job_id,
+            decisions=[ApprovalDecision(change_id=d.change_id, approved=True) for d in diffs],
+        )
+
+        assert worker.get_job(job_id).status is JobStatus.COMPLETED
+        exported = worker.export(session_id="s1", fmt="html").content.decode()
+        assert diffs[0].new_html in exported
+
+    def test_two_processes_never_mint_the_same_job_id(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The id counter is part of the shared state, or both processes start at one."""
+        first = FakeSuperDocsClient(state_dir=str(tmp_path))
+        first.upload_document(document_html=DOC, session_id="s1")
+        one = first.chat_async(session_id="s1", message="rewrite")
+
+        second = FakeSuperDocsClient(state_dir=str(tmp_path))
+        second.upload_document(document_html=DOC, session_id="s2")
+        two = second.chat_async(session_id="s2", message="rewrite")
+
+        assert one != two
+
+    def test_without_a_state_dir_the_fake_stays_in_memory(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The control, and the default the keyless suite depends on.
+
+        Sharing is opt-in: unset, two instances are two independent fakes, which is what a
+        test wants and why 218 tests do not touch the disk.
+        """
+        first = FakeSuperDocsClient(state_dir=None)
+        first.upload_document(document_html=DOC, session_id="s1")
+        job_id = first.chat_async(session_id="s1", message="rewrite")
+
+        with pytest.raises(SuperDocsError):
+            FakeSuperDocsClient(state_dir=None).get_job(job_id)
