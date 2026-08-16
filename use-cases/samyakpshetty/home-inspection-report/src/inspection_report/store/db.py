@@ -617,6 +617,37 @@ def photo_bytes(
     return bytes(legacy), mime
 
 
+def photo_bytes_by_url(
+    conn: psycopg.Connection[dict[str, Any]], url: str, *, store: BlobStore | None = None
+) -> bytes | None:
+    """The bytes behind a SuperDocs image URL, from our own record.
+
+    The offline exporter needs image bytes to draw them, and it used to ask the fake, which
+    only remembers what it uploaded in the life of one process. Two things then combine
+    badly: uploads are cached by content hash so a photograph is never sent twice, and the
+    API restarts. After that the exporter could not resolve a photograph it had every right
+    to expect, dropped it, and left its caption sitting under nothing — a report delivered
+    without its evidence.
+
+    The database always has the bytes, so it is the honest place to ask.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT p.storage_key, p.bytes FROM photos p "
+            "JOIN photo_uploads u ON u.sha256 = p.sha256 "
+            "WHERE u.remote_url = %s LIMIT 1",
+            (url,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    if row["storage_key"]:
+        data = (store or blobs.default_store()).get(row["storage_key"])
+        if data is not None:
+            return data
+    return bytes(row["bytes"]) if row["bytes"] is not None else None
+
+
 def photo_data_for(
     conn: psycopg.Connection[dict[str, Any]],
     inspection_id: UUID,

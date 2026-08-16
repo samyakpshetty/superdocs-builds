@@ -18,9 +18,11 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import os
 import re
 from dataclasses import dataclass, field
 
+from inspection_report.store.blobs import BlobError, FilesystemBlobStore
 from inspection_report.superdocs.base import (
     ALLOWED_IMAGE_TYPES,
     MAX_IMAGE_BYTES,
@@ -124,6 +126,10 @@ class FakeSuperDocsClient:
     ops_charged: int = 0
     ops_budget: int = 10_000
     _ids: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
+
+    def __post_init__(self) -> None:
+        # The resolver asks the store for anything this process did not upload itself.
+        self.images.lookup = self._recall_image
 
     def _next(self, prefix: str) -> str:
         return f"{prefix}-{next(self._ids):04d}"
@@ -388,7 +394,23 @@ class FakeSuperDocsClient:
         )
         url = f"{_IMAGE_HOST}/{digest}.{ext}"
         self.images.by_url[url] = data
+        # Also kept on disk. The live service holds an uploaded image server-side, so a fake
+        # that only remembers it for the life of one process is *less* capable in a way that
+        # produces a wrong document rather than an error: after a restart the export found no
+        # bytes, dropped the photograph, and left its caption sitting under nothing.
+        self._image_store().put(digest, data)
         return ImageUpload(url=url, content_type=content_type, size=len(data))
+
+    def _image_store(self) -> FilesystemBlobStore:
+        return FilesystemBlobStore(os.environ.get("FAKE_IMAGE_DIR", "data/fake-images"))
+
+    def _recall_image(self, url: str) -> bytes | None:
+        """Find bytes for a URL this process never uploaded. Keyed by the digest in the URL."""
+        digest = url.rsplit("/", 1)[-1].split(".")[0]
+        try:
+            return self._image_store().get(digest)
+        except BlobError:
+            return None
 
     def upload_template(self, *, data: bytes, filename: str) -> TemplateRef:
         tid = hashlib.sha1(data).hexdigest()[:36]

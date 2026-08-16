@@ -50,14 +50,37 @@ def _runs_to_html(paragraph: Any) -> str:
     return "".join(out)
 
 
-def _alignment(paragraph: Any) -> str:
-    """Paragraph alignment, as the inline style the service emits."""
+def _paragraph_style(paragraph: Any) -> str:
+    """Alignment and rules, as the inline style the service emits.
+
+    The rules matter as much as the alignment: the formats close the masthead with a heavy
+    border and sit every heading on a hairline, and a converter that dropped them produced
+    HTML describing a plainer document than the `.docx` it came from.
+    """
+    from docx.oxml.ns import qn
+
+    style: list[str] = []
+
     name = getattr(paragraph.alignment, "name", None)
     if name == "CENTER":
-        return ' style="text-align:center"'
-    if name == "RIGHT":
-        return ' style="text-align:right"'
-    return ""
+        style.append("text-align:center")
+    elif name == "RIGHT":
+        style.append("text-align:right")
+
+    properties = paragraph._p.pPr
+    borders = properties.find(qn("w:pBdr")) if properties is not None else None
+    if borders is not None:
+        for edge in ("bottom", "top"):
+            border = borders.find(qn("w:" + edge))
+            if border is None or border.get(qn("w:val")) in (None, "none", "nil"):
+                continue
+            # OOXML sizes a border in eighths of a point.
+            eighths = border.get(qn("w:sz")) or "6"
+            colour = (border.get(qn("w:color")) or "111318").lstrip("#")
+            with contextlib.suppress(TypeError, ValueError):
+                style.append(f"border-{edge}:{int(eighths) / 8:g}pt solid #{colour}")
+
+    return f' style="{";".join(style)}"' if style else ""
 
 
 def _heading_level(paragraph: Any) -> int | None:
@@ -162,7 +185,7 @@ def to_html(doc: Any) -> str:
             continue
         flush()
         level = _heading_level(paragraph)
-        align = _alignment(paragraph)
+        align = _paragraph_style(paragraph)
         blocks.append(f"<h{level}{align}>{inner}</h{level}>" if level else f"<p{align}>{inner}</p>")
     flush()
     return "\n".join(blocks)

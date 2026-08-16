@@ -16,8 +16,13 @@ which is the honest degradation for a stand-in.
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+
+from inspection_report.logging import get_logger
+
+_log = get_logger("inspection_report.offline_export")
 
 
 @dataclass
@@ -38,6 +43,7 @@ class Block:
     tag: str
     runs: list[Run] = field(default_factory=list)
     align: str = "left"
+    rule: str | None = None
     image_url: str = ""
     image_alt: str = ""
 
@@ -55,6 +61,19 @@ def _size_in(style: str) -> float | None:
 
     match = re.search(r"font-size:\s*([\d.]+)pt", style)
     return float(match.group(1)) if match else None
+
+
+def _rule_in(style: str) -> str | None:
+    """A paragraph's bottom border, which is what a section heading sits on.
+
+    The formats are designed with rules — a heavy one closing the masthead, hairlines under
+    each heading — and a renderer that ignored them showed the demo a document visibly
+    plainer than the one the service produces from the same file.
+    """
+    import re
+
+    match = re.search(r"border-(bottom|top):\s*([\d.]+)pt\s+solid\s+#?([0-9a-f]{6})", style)
+    return f"{match.group(1)}:{match.group(2)}:{match.group(3)}" if match else None
 
 
 def _colour_in(style: str) -> str | None:
@@ -89,6 +108,7 @@ class _Reader(HTMLParser):
         self._open: list[str] = []
         self._runs: list[Run] = []
         self._align = "left"
+        self._rule: str | None = None
         self._bold = 0
         self._italic = 0
         self._sizes: list[float | None] = []
@@ -98,7 +118,9 @@ class _Reader(HTMLParser):
         if tag in self.BLOCKS:
             self._flush()
             self._open.append(tag)
-            self._align = _align_in(_style_of(attrs))
+            style = _style_of(attrs)
+            self._align = _align_in(style)
+            self._rule = _rule_in(style)
         elif tag in self.BOLD:
             self._bold += 1
         elif tag in self.ITALIC:
@@ -119,6 +141,7 @@ class _Reader(HTMLParser):
             if self._open and self._open[-1] == tag:
                 self._open.pop()
             self._align = "left"
+            self._rule = None
         elif tag in self.BOLD:
             self._bold = max(0, self._bold - 1)
         elif tag in self.ITALIC:
@@ -145,7 +168,14 @@ class _Reader(HTMLParser):
 
     def _flush(self) -> None:
         if self._runs and self._open:
-            self.blocks.append(Block(tag=self._open[-1], runs=list(self._runs), align=self._align))
+            self.blocks.append(
+                Block(
+                    tag=self._open[-1],
+                    runs=list(self._runs),
+                    align=self._align,
+                    rule=self._rule,
+                )
+            )
         self._runs.clear()
 
     def close(self) -> None:
@@ -162,12 +192,22 @@ def read_blocks(html: str) -> list[Block]:
 
 @dataclass
 class ImageResolver:
-    """Maps an image URL back to its bytes. The fake holds every photo it was given."""
+    """Maps an image URL back to its bytes.
+
+    ``lookup`` is the fallback for a URL this process did not see uploaded. It exists because
+    the in-memory map is emptied by a restart, and an exporter that cannot find a photograph
+    silently drops it — leaving the caption behind and a report with no evidence in it.
+    """
 
     by_url: dict[str, bytes] = field(default_factory=dict)
+    lookup: Callable[[str], bytes | None] | None = None
 
     def get(self, url: str) -> bytes | None:
-        return self.by_url.get(url.split("?")[0])
+        key = url.split("?")[0]
+        found = self.by_url.get(key)
+        if found is not None:
+            return found
+        return self.lookup(key) if self.lookup is not None else None
 
 
 # Sized like a report rather than like a web page: a section heading sits just above the
@@ -183,8 +223,20 @@ def _rgb(colour: str | None) -> tuple[float, float, float]:
     return tuple(int(colour[i : i + 2], 16) / 255 for i in (0, 2, 4))  # type: ignore[return-value]
 
 
-def _font(*, bold: bool, italic: bool) -> str:
-    """The base-14 PDF font for one combination of emphasis."""
+def _font(*, bold: bool, italic: bool, serif: bool = True) -> str:
+    """The base-14 PDF font for one combination of emphasis.
+
+    Serif by default, because the shipped formats set the document in one and a stand-in
+    that rendered everything in Helvetica made the demo look like a different product.
+    """
+    if serif:
+        if bold and italic:
+            return "tibi"
+        if bold:
+            return "tibo"
+        if italic:
+            return "tiit"
+        return "tiro"
     if bold and italic:
         return "hebi"
     if bold:
@@ -263,6 +315,9 @@ def to_pdf(html: str, images: ImageResolver) -> bytes:
         if block.tag == "img":
             data = images.get(block.image_url)
             if not data:
+                # Loud, because the alternative is a report that quietly lost its evidence
+                # and a caption sitting under nothing.
+                _log.error("image_unresolved", extra={"blocks": len(block.image_url)})
                 continue
             box_h = 150.0
             if y + box_h > height - margin:
@@ -335,6 +390,18 @@ def to_pdf(html: str, images: ImageResolver) -> bytes:
                 )
                 x += w + space
             y += leading
+
+        if block.rule:
+            edge, weight, colour = block.rule.split(":")
+            if edge == "bottom":
+                y += 3
+                page.draw_line(
+                    fitz.Point(margin, y),
+                    fitz.Point(right, y),
+                    color=_rgb(colour),
+                    width=max(0.4, float(weight) * 0.6),
+                )
+                y += 5
         y += 4 if heading else 2
 
     out: bytes = doc.tobytes()

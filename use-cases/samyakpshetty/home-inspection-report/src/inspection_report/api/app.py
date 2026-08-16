@@ -467,6 +467,19 @@ def _client() -> Any:
     return _FAKE
 
 
+def _with_image_lookup(client: Any, conn: Any) -> Any:
+    """Let the offline exporter resolve photographs from our own record.
+
+    Only the fake exposes an image resolver — the live service holds the bytes itself and
+    needs nothing. Without this, an export after a restart silently loses every photograph
+    whose upload was cached, because the fake never saw those bytes in this process.
+    """
+    resolver = getattr(client, "images", None)
+    if resolver is not None:
+        resolver.lookup = lambda url: db.photo_bytes_by_url(conn, url)
+    return client
+
+
 def _release(client: Any) -> None:
     """Close a live client; leave the shared fake open for the next request."""
     if client is not _FAKE:
@@ -726,6 +739,7 @@ def export_report(inspection_id: UUID, fmt: str = "pdf", conn: Any = Depends(get
         # Rebuilds the session's document from our own record if the session is gone, so a
         # finished report stays exportable across a restart. The flag says which path it
         # took; it is reported rather than swallowed.
+        _with_image_lookup(client, conn)
         export, rebuilt = pipeline.export_recovering_session(
             client,
             inspection,
