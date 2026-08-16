@@ -42,11 +42,11 @@ def conn():  # type: ignore[no-untyped-def]
         before = _inspection_ids(connection)
         yield connection
         # Remove only what this test made, so a developer's own data survives a test run.
-        made = _inspection_ids(connection) - before
-        if made:
-            with connection.cursor() as cur:
-                cur.execute("DELETE FROM inspections WHERE id = ANY(%s)", (list(made),))
-            connection.commit()
+        # Through the application's own delete, not raw SQL: that is what reclaims the
+        # blobs. Deleting the rows directly left the photographs on the volume — a tidy
+        # database and a growing disk.
+        for made_id in _inspection_ids(connection) - before:
+            db.delete_inspection(connection, made_id)
 
 
 def _inspection_ids(connection) -> set:  # type: ignore[no-untyped-def]
