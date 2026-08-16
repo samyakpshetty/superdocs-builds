@@ -13,6 +13,7 @@ import pytest
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
+from inspection_report.photos import pipeline
 from inspection_report.photos.pipeline import (
     MAX_UPLOAD_BYTES,
     PhotoRejected,
@@ -133,3 +134,59 @@ class TestThumbnails:
         cleaned = clean(_jpeg_with_gps(), filename="roof.jpg")
         with Image.open(io.BytesIO(cleaned.thumbnail)) as thumb:
             assert not thumb.getexif().get_ifd(0x8825)
+
+
+class TestThePhotographsAnInspectorActuallyTakes:
+    """A phone, not a prepared test asset.
+
+    The cap used to be 8 MB with no resize, and HEIC — the iPhone camera default since
+    iOS 11 — was refused outright. Both are things the person this product is for would hit
+    on their own device, on their first inspection.
+    """
+
+    def _jpeg(self, w: int, h: int) -> bytes:
+        image = Image.new("RGB", (w, h), (110, 120, 130))
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG", quality=95)
+        return buf.getvalue()
+
+    def test_a_large_photograph_is_downscaled_rather_than_refused(self) -> None:
+        cleaned = clean(self._jpeg(8000, 6000), filename="DSC_0001.jpg")
+        assert max(cleaned.width, cleaned.height) == pipeline.STORED_MAX_EDGE
+        assert cleaned.width == 2048 and cleaned.height == 1536, "aspect ratio must survive"
+        assert len(cleaned.data) < 1024 * 1024
+
+    def test_a_small_photograph_is_left_alone(self) -> None:
+        """Downscaling is a ceiling, not a target — nothing is upscaled."""
+        cleaned = clean(self._jpeg(640, 480), filename="small.jpg")
+        assert (cleaned.width, cleaned.height) == (640, 480)
+
+    @pytest.mark.skipif(not pipeline.HEIF_SUPPORTED, reason="pillow-heif not installed")
+    def test_an_iphone_heic_is_accepted_and_stored_as_jpeg(self) -> None:
+        import pillow_heif
+
+        source = pillow_heif.from_pillow(Image.new("RGB", (4032, 3024), (90, 110, 130)))
+        buf = io.BytesIO()
+        source.save(buf, quality=90)
+
+        cleaned = clean(buf.getvalue(), filename="IMG_4471.heic")
+        # The format is an input detail: nothing downstream should carry HEIC.
+        assert cleaned.content_type == "image/jpeg"
+        assert Image.open(io.BytesIO(cleaned.data)).format == "JPEG"
+        assert max(cleaned.width, cleaned.height) == pipeline.STORED_MAX_EDGE
+
+    def test_exif_is_still_stripped_on_the_resize_path(self) -> None:
+        """The resize must not become a way for metadata to survive."""
+        image = Image.new("RGB", (4000, 3000), (80, 90, 100))
+        exif = image.getexif()
+        exif[0x010F] = "TestCam"  # Make
+        exif[0x0131] = "TestSoftware"  # Software
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG", exif=exif)
+
+        cleaned = clean(buf.getvalue(), filename="geotagged.jpg")
+        assert max(cleaned.width, cleaned.height) == pipeline.STORED_MAX_EDGE, "must have resized"
+        with Image.open(io.BytesIO(cleaned.data)) as img:
+            survived = img.getexif()
+            assert 0x010F not in survived
+            assert 0x0131 not in survived

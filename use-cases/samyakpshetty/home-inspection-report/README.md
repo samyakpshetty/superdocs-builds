@@ -20,8 +20,10 @@ happens.](docs/review-gate.png)
    belonging to exactly one inspection system and carrying a severity, notes and photographs.
 2. **Photographs are cleaned before they go anywhere.** An oversized body is refused with a
    413 before it is read at all, the upload is then read in bounded chunks, the image is
-   decoded to prove it is an image, and **EXIF is stripped** — a phone photograph of a house
-   carries the house's GPS coordinates, and this report goes to buyers, agents and lenders.
+   decoded to prove it is an image, **HEIC is accepted** (the iPhone camera default) and
+   re-encoded to JPEG, the picture is **downscaled to 2048px** rather than refused for being
+   big, and **EXIF is stripped** — a phone photograph of a house carries the house's GPS
+   coordinates, and this report goes to buyers, agents and lenders.
 3. **The report format is a Word document**, registered with SuperDocs and loaded back from
    it. The firm's letterhead, severity legend, standing preamble and limitations clause are
    theirs, in a file they can open and redesign.

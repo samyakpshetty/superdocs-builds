@@ -16,8 +16,10 @@ Five things happen to every photo, in this order, and the order matters:
 4. **The content is hashed.** The sha256 of the cleaned bytes *is* the photo's identity, so
    the same photograph uploaded twice — a re-run, a retry, a crash halfway through — costs
    one upload, ever.
-5. **A thumbnail is derived** for the interface, so the browser is never handed a 10 MB file
-   to draw a 200-pixel card with.
+5. **The image is downscaled and a thumbnail derived.** A phone shoots far more pixels
+   than a printed report or a browser card can use, and storing the original is a cost with
+   no reader. HEIC — the iPhone default — is decoded and kept as JPEG, so the format is an
+   input detail the rest of the build never sees.
 """
 
 from __future__ import annotations
@@ -32,9 +34,30 @@ from inspection_report.logging import get_logger
 
 _log = get_logger("inspection_report.photos")
 
-# Below the API's 10 MB decoded limit, and a deliberate choice: a report with forty photos
-# at 8 MB each is a document nobody can email. Inspectors shoot at phone resolution.
-MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+# HEIC has been the iPhone camera default since iOS 11, so the device this product is
+# actually used on produces a format Pillow cannot read unaided. Registering the opener is
+# the difference between "works with the photographs an inspector takes" and "works with the
+# photographs an inspector remembers to convert". Optional at import: a deployment without
+# the wheel keeps every other format rather than failing to start.
+try:  # pragma: no cover - exercised by whether the import succeeds
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    HEIF_SUPPORTED = True
+except Exception:
+    # Any failure here means "no HEIC support", not a crash.
+    HEIF_SUPPORTED = False
+
+# What an upload may arrive as. Raised well above phone-photograph size because the answer
+# to a big photograph is to resize it, not to refuse it: a 48-megapixel phone routinely
+# produces more than the old 8 MB, and rejecting an inspector's own camera is not a cap, it
+# is a defect. The outer wall is the API's request-size middleware.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+# What a photograph is stored at. Beyond this the pixels are a cost with no reader: the
+# image is printed a few inches wide in a report and drawn at a few hundred pixels in the
+# interface. Downscaling here is also what keeps the database a sane size.
+STORED_MAX_EDGE = 2048
 
 # What Pillow reports -> what the API accepts. A format outside this map is refused rather
 # than guessed at.
@@ -43,6 +66,10 @@ _FORMAT_TO_MIME = {
     "JPEG": "image/jpeg",
     "WEBP": "image/webp",
     "GIF": "image/gif",
+    # Decoded via pillow-heif and re-encoded to JPEG on the way out, so nothing downstream
+    # has to know the format existed.
+    "HEIF": "image/heic",
+    "HEIC": "image/heic",
 }
 
 THUMBNAIL_MAX_EDGE = 480
@@ -94,6 +121,9 @@ def clean(raw: bytes, *, filename: str) -> CleanedPhoto:
             had_exif = bool(getattr(image, "_getexif", lambda: None)()) or "exif" in image.info
             cleaned, width, height = _strip_metadata(image, fmt)
             thumb = _thumbnail(image, fmt)
+            # What we stored, not what arrived: a HEIC is a JPEG by the time it is kept.
+            if fmt in ("HEIF", "HEIC"):
+                content_type = "image/jpeg"
     except PhotoRejected:
         raise
     except (UnidentifiedImageError, OSError, ValueError) as exc:
@@ -134,14 +164,20 @@ def _strip_metadata(image: Image.Image, fmt: str) -> tuple[bytes, int, int]:
     one.
     """
     working = image.convert("RGBA") if fmt in ("PNG", "GIF", "WEBP") else image.convert("RGB")
+    # Downscale before the copy, so a 48-megapixel original costs one resize and is stored
+    # at a size someone will actually look at.
+    if max(working.size) > STORED_MAX_EDGE:
+        working.thumbnail((STORED_MAX_EDGE, STORED_MAX_EDGE), Image.Resampling.LANCZOS)
     bare = Image.new(working.mode, working.size)
     bare.paste(working)  # pixels only; `info` is not carried across a paste
 
     buf = io.BytesIO()
-    if fmt == "JPEG":
-        bare.save(buf, format="JPEG", quality=88, optimize=True)
-    else:
+    if fmt in ("PNG", "GIF", "WEBP"):
         bare.save(buf, format="PNG", optimize=True)
+    else:
+        # JPEG and HEIC alike. A HEIC leaves here as a JPEG, which is what makes the format
+        # an input detail rather than something the rest of the build carries.
+        bare.save(buf, format="JPEG", quality=88, optimize=True)
     return buf.getvalue(), working.width, working.height
 
 
