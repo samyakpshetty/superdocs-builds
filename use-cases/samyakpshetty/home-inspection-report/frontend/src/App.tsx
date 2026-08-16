@@ -695,7 +695,12 @@ function Gate({
   }, [id]);
   useEffect(load, [load]);
 
+  // Only a rail-clean proposal is anyone's to decide: a refusal is already settled and is
+  // not offered as a choice.
   const undecided = (proposals ?? []).filter((p) => p.rail_clean && p.decision === "pending");
+  const stillToDecide = undecided.filter(
+    (p) => approvals[p.change_id] === undefined,
+  ).length;
   const allDecided = (proposals ?? []).length > 0 && undecided.length === 0;
 
   return (
@@ -814,11 +819,7 @@ function Gate({
           <div className="row">
             <button
               className="btn--primary"
-              disabled={
-                busy !== null ||
-                allDecided ||
-                undecided.some((p) => approvals[p.change_id] === undefined)
-              }
+              disabled={busy !== null || allDecided || stillToDecide > 0}
               onClick={() => {
                 setBusy("decide");
                 setError(null);
@@ -834,15 +835,30 @@ function Gate({
                   .finally(() => setBusy(null));
               }}
             >
-              {busy === "decide" ? "Sending…" : "Apply decisions"}
+              {/* The button says why it is disabled. A greyed control with the reason in
+                  small text beside it reads as "already done" — which is exactly how it was
+                  misread in testing, by the person who commissioned it. */}
+              {busy === "decide"
+                ? "Sending…"
+                : allDecided
+                  ? "Decisions already applied"
+                  : stillToDecide > 0
+                    ? `Decide ${stillToDecide} more to apply`
+                    : "Apply decisions"}
             </button>
-            {undecided.length > 0 && (
+            {stillToDecide > 0 && (
               <span className="hint">
-                {undecided.filter((p) => approvals[p.change_id] === undefined).length} still to
-                decide
+                Choose <em>Use the rewrite</em> or <em>Keep my wording</em> on the
+                {stillToDecide === 1 ? " one left" : ` ${stillToDecide} left`}. The rail&rsquo;s
+                refusals are already decided and need nothing from you.
               </span>
             )}
-            {allDecided && <span className="hint">All decided — ready to export.</span>}
+            {allDecided && (
+              <span className="hint">
+                Sent. Approving closes the round, so this cannot be reopened — the export is
+                next.
+              </span>
+            )}
           </div>
         </div>
       )}

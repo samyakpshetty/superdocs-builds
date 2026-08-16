@@ -562,10 +562,9 @@ def _export_name(inspection: Inspection) -> str:
 
 
 def _proposal_row(result: Any, proposal: Any) -> dict[str, Any]:
-    from uuid import uuid4
-
+    # No `id` here on purpose: the store derives it from (inspection, change_id) so that
+    # recording the same proposal twice updates it instead of duplicating it.
     return {
-        "id": uuid4(),
         "finding_id": None,
         "job_id": result.job_id,
         "change_id": proposal.diff.change_id,

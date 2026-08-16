@@ -21,7 +21,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import psycopg
 from psycopg.rows import dict_row
@@ -249,15 +249,31 @@ def known_uploads(conn: psycopg.Connection[dict[str, Any]]) -> dict[str, str]:
         return {r["sha256"]: r["remote_url"] for r in cur.fetchall()}
 
 
+# Stable namespace for deriving a proposal's primary key from (inspection, change_id).
+_PROPOSAL_NS = UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
+
+
 def record_proposals(
     conn: psycopg.Connection[dict[str, Any]],
     *,
     inspection_id: UUID,
     rows: list[dict[str, Any]],
 ) -> None:
-    """Keep every proposal and the rail's verdict on it, decided or not."""
+    """Keep every proposal and the rail's verdict on it, decided or not.
+
+    A proposal is identified by its ``change_id`` within an inspection, so the primary key is
+    derived from that pair rather than minted fresh. It used to be a new ``uuid4()`` on every
+    call, which meant the ``ON CONFLICT`` below never fired: recording the same round twice —
+    once when the proposals arrive, once when they are decided — inserted a second set instead
+    of updating the first, and left the audit trail holding a stale `pending` copy of every
+    decided change. "Why does the report say this" has to have one answer.
+    """
     with conn.cursor() as cur:
         for row in rows:
+            row = {
+                **row,
+                "id": uuid5(_PROPOSAL_NS, f"{inspection_id}:{row['change_id']}"),
+            }
             cur.execute(
                 """
                 INSERT INTO proposals (id, inspection_id, finding_id, job_id, change_id,

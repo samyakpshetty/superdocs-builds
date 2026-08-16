@@ -305,3 +305,34 @@ def _tiny_png() -> bytes:
         + chunk(b"IDAT", zlib.compress(raw, 9))
         + chunk(b"IEND", b"")
     )
+
+
+class TestTheAuditTrailHasOneRowPerProposal:
+    """Recording the same proposal twice must update it, not duplicate it.
+
+    A round is recorded when the proposals arrive and again when they are decided. The row
+    key used to be a fresh uuid4 on each call, so the upsert never fired and the table ended
+    up holding a stale `pending` copy of every decided change. "Why does the report say this"
+    has to have exactly one answer.
+    """
+
+    def test_the_key_is_derived_from_the_change_not_minted(self) -> None:
+        from uuid import UUID, uuid5
+
+        from inspection_report.store.db import _PROPOSAL_NS
+
+        inspection_id = UUID("11111111-2222-3333-4444-555555555555")
+        first = uuid5(_PROPOSAL_NS, f"{inspection_id}:chg-abc")
+        second = uuid5(_PROPOSAL_NS, f"{inspection_id}:chg-abc")
+        other = uuid5(_PROPOSAL_NS, f"{inspection_id}:chg-def")
+        assert first == second, "the same change must land on the same row"
+        assert first != other, "different changes must not collide"
+
+    def test_a_different_inspection_never_collides(self) -> None:
+        from uuid import UUID, uuid5
+
+        from inspection_report.store.db import _PROPOSAL_NS
+
+        a = uuid5(_PROPOSAL_NS, f"{UUID(int=1)}:chg-abc")
+        b = uuid5(_PROPOSAL_NS, f"{UUID(int=2)}:chg-abc")
+        assert a != b
