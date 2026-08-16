@@ -32,6 +32,7 @@ services:
       DATABASE_URL: postgresql://inspect:inspect@db:5432/inspect
       PROVIDER: ${PROVIDER:-fake}
       PHOTO_STORE_DIR: /app/data/photos
+      FAKE_IMAGE_DIR: /app/data/fake-images
       SUPERDOCS_API_KEY: ${SUPERDOCS_API_KEY:-}
       LOG_FORMAT: ${LOG_FORMAT:-json}
     ports:
@@ -44,6 +45,7 @@ services:
       # Photograph bytes live here rather than in Postgres. A named volume, so they
       # survive `docker compose down` the way the database does.
       - photo-data:/app/data/photos
+      - fake-image-data:/app/data/fake-images
       - ./templates:/app/templates
       - ./sample:/app/sample
       # Exports must land where the host can see them: a --rm container's writes outside a
@@ -65,6 +67,7 @@ services:
       PROVIDER: ${PROVIDER:-fake}
       SUPERDOCS_API_KEY: ${SUPERDOCS_API_KEY:-}
       PHOTO_STORE_DIR: /app/data/photos
+      FAKE_IMAGE_DIR: /app/data/fake-images
       LOG_FORMAT: ${LOG_FORMAT:-json}
     volumes:
       - ./src:/app/src
@@ -72,6 +75,7 @@ services:
       - ./templates:/app/templates
       - ./migrations:/app/migrations
       - photo-data:/app/data/photos
+      - fake-image-data:/app/data/fake-images
     working_dir: /app
     command: ["python", "-m", "inspection_report.worker"]
 
@@ -91,3 +95,4 @@ services:
 volumes:
   db-data:
   photo-data:
+  fake-image-data:
