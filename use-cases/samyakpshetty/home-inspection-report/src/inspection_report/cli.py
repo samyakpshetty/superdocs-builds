@@ -217,5 +217,6 @@ def seed(reset: bool) -> None:
     )
     click.echo("Open http://localhost:5174 and it is the first row.")
 
+
 if __name__ == "__main__":
     main()
