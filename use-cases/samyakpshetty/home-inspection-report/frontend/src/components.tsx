@@ -1,5 +1,7 @@
 /** Small shared pieces. Kept together because there are few of them and they are all dumb. */
 
+import { useEffect, useState } from "react";
+
 import type { Breach, Check, Severity } from "./api";
 
 export function SeverityTag({ severity }: { severity: Severity | undefined }) {
@@ -92,5 +94,65 @@ export function CheckList({ checks }: { checks: Check[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+
+/**
+ * A destructive action that asks first, then does it.
+ *
+ * Two-step rather than a `confirm()` dialog: the question appears where the action is, so a
+ * misfire on a phone is caught by reading a sentence rather than by a modal appearing over
+ * the thing you were looking at. It disarms itself after a few seconds, because a button
+ * left armed is a trap for the next tap.
+ *
+ * Deliberately not red. Colour means severity in this product and nowhere else, so the
+ * weight of a destructive action is carried by the words and by having to say it twice.
+ */
+export function ConfirmButton({
+  label,
+  question,
+  confirm,
+  onConfirm,
+  busy = false,
+  small = true,
+}: {
+  label: string;
+  question: string;
+  confirm: string;
+  onConfirm: () => void;
+  busy?: boolean;
+  small?: boolean;
+}) {
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    if (!armed) return;
+    const timer = window.setTimeout(() => setArmed(false), 6000);
+    return () => window.clearTimeout(timer);
+  }, [armed]);
+
+  if (!armed) {
+    return (
+      <button
+        className={small ? "btn--quiet btn--small" : "btn--quiet"}
+        onClick={() => setArmed(true)}
+        disabled={busy}
+      >
+        {label}
+      </button>
+    );
+  }
+
+  return (
+    <span className="confirm" role="group">
+      <span className="confirm__ask">{question}</span>
+      <button className="btn--primary btn--small" onClick={onConfirm} disabled={busy}>
+        {busy ? "Deleting…" : confirm}
+      </button>
+      <button className="btn--small" onClick={() => setArmed(false)} disabled={busy}>
+        Keep it
+      </button>
+    </span>
   );
 }

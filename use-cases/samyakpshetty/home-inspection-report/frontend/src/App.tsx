@@ -8,7 +8,15 @@ import {
   type InspectionRow,
   type Proposal,
 } from "./api";
-import { CheckList, Empty, ErrorNote, RailVerdict, SeverityTag, Skeleton } from "./components";
+import {
+  CheckList,
+  ConfirmButton,
+  Empty,
+  ErrorNote,
+  RailVerdict,
+  SeverityTag,
+  Skeleton,
+} from "./components";
 import { Flagged, ReportShape, WordDiff } from "./insight";
 
 type Screen = "list" | "walk" | "gate" | "export";
@@ -137,6 +145,7 @@ export default function App() {
                 id={current}
                 screen={screen}
                 setScreen={(next) => go(next, current)}
+                onDeleted={() => go("list", null)}
                 catalogue={catalogue}
               />
             )}
@@ -320,15 +329,18 @@ function InspectionWorkspace({
   id,
   screen,
   setScreen,
+  onDeleted,
   catalogue,
 }: {
   id: string;
   screen: Screen;
   setScreen: (s: Screen) => void;
+  onDeleted: () => void;
   catalogue: Catalogue;
 }) {
   const [inspection, setInspection] = useState<Inspection | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [toast, say] = useToast();
 
   const refresh = useCallback(() => {
@@ -352,6 +364,24 @@ function InspectionWorkspace({
         <span className="section-head__count">
           {inspection.property.city} · {inspection.inspected_on}
         </span>
+        <div className="section-head__actions">
+          <ConfirmButton
+            label="Delete inspection"
+            question={`Delete ${inspection.property.address_line} and its ${inspection.findings.length} findings? This cannot be undone.`}
+            confirm="Delete permanently"
+            busy={deleting}
+            onConfirm={() => {
+              setDeleting(true);
+              api
+                .deleteInspection(id)
+                .then(onDeleted)
+                .catch((e: ApiError) => {
+                  setError(e.message);
+                  setDeleting(false);
+                });
+            }}
+          />
+        </div>
       </div>
 
       <div className="tabs" role="tablist">
@@ -496,6 +526,25 @@ function FindingCard({
       <div className="finding__head">
         <SeverityTag severity={severity} />
         {finding.location && <span className="finding__where">{finding.location}</span>}
+        <span className="finding__actions">
+          <ConfirmButton
+            label="Remove"
+            question="Remove this finding and its photographs?"
+            confirm="Remove"
+            busy={busy}
+            onConfirm={() => {
+              setBusy(true);
+              api
+                .deleteFinding(finding.id)
+                .then(() => {
+                  onChanged();
+                  say("Finding removed.");
+                })
+                .catch((err: ApiError) => setError(err.message))
+                .finally(() => setBusy(false));
+            }}
+          />
+        </span>
       </div>
       <p className="finding__note">{finding.observation}</p>
       {finding.plain_language && (
@@ -511,13 +560,31 @@ function FindingCard({
       {finding.photos.length > 0 && (
         <div className="thumbs">
           {finding.photos.map((p) => (
-            <img
-              key={p.id}
-              className="thumb"
-              src={api.photoUrl(p.id)}
-              alt={p.caption || `Photograph for ${finding.location || "this finding"}`}
-              loading="lazy"
-            />
+            <figure className="thumb-wrap" key={p.id}>
+              <img
+                className="thumb"
+                src={api.photoUrl(p.id)}
+                alt={p.caption || `Photograph for ${finding.location || "this finding"}`}
+                loading="lazy"
+              />
+              <ConfirmButton
+                label="Remove"
+                question="Remove this photograph?"
+                confirm="Remove"
+                busy={busy}
+                onConfirm={() => {
+                  setBusy(true);
+                  api
+                    .deletePhoto(p.id)
+                    .then(() => {
+                      onChanged();
+                      say("Photograph removed.");
+                    })
+                    .catch((err: ApiError) => setError(err.message))
+                    .finally(() => setBusy(false));
+                }}
+              />
+            </figure>
           ))}
         </div>
       )}

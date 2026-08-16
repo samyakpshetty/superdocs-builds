@@ -27,7 +27,20 @@ def conn():  # type: ignore[no-untyped-def]
         pytest.skip(f"needs a Postgres ({type(exc).__name__}); try `make test-db`")
     with db.connect() as connection:
         db.apply_schema(connection)
+        before = _inspection_ids(connection)
         yield connection
+        made = _inspection_ids(connection) - before
+        if made:
+            with connection.cursor() as cur:
+                cur.execute("DELETE FROM inspections WHERE id = ANY(%s)", (list(made),))
+            connection.commit()
+
+
+def _inspection_ids(connection) -> set:  # type: ignore[no-untyped-def]
+    """These tests share the application's database; they must not litter it."""
+    with connection.cursor() as cur:
+        cur.execute("SELECT id FROM inspections")
+        return {row["id"] for row in cur.fetchall()}
 
 
 @pytest.fixture

@@ -287,6 +287,45 @@ def add_finding(
     return {"id": str(finding.id)}
 
 
+@app.delete("/api/inspections/{inspection_id}", status_code=204)
+def delete_inspection(inspection_id: UUID, conn: Any = Depends(get_conn)) -> Response:
+    """Remove an inspection and everything under it. There is no undo.
+
+    Refused while a review is in flight: the worker is holding that inspection and deleting
+    it underneath would leave a job running against a report that no longer exists.
+    """
+    live = jobs.latest_for(conn, inspection_id)
+    if live is not None and not live.finished:
+        raise HTTPException(
+            status_code=409,
+            detail="a review is running for this inspection. Wait for it to finish, then "
+            "delete it.",
+        )
+    if not db.delete_inspection(conn, inspection_id):
+        raise HTTPException(status_code=404, detail="no inspection with that id")
+    return Response(status_code=204)
+
+
+@app.delete("/api/findings/{finding_id}", status_code=204)
+def delete_finding(finding_id: UUID, conn: Any = Depends(get_conn)) -> Response:
+    """Remove one finding and its photographs."""
+    if not db.delete_finding(conn, finding_id):
+        raise HTTPException(status_code=404, detail="no finding with that id")
+    return Response(status_code=204)
+
+
+@app.delete("/api/photos/{photo_id}", status_code=204)
+def delete_photo(photo_id: UUID, conn: Any = Depends(get_conn)) -> Response:
+    """Remove one photograph.
+
+    The bytes go too, unless another finding photographed the same thing — a blob is keyed
+    by its content hash, so it is reclaimed only when nothing references it.
+    """
+    if not db.delete_photo(conn, photo_id):
+        raise HTTPException(status_code=404, detail="no photograph with that id")
+    return Response(status_code=204)
+
+
 @app.post("/api/findings/{finding_id}/photos", status_code=201)
 async def add_photo(
     finding_id: UUID,

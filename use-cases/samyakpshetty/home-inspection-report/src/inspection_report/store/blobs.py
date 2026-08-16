@@ -15,10 +15,10 @@ paid for once is never paid for again. Making that the storage key means the pro
 in the store too: two findings sharing a photograph share the file, and re-uploading after a
 crash overwrites a byte-identical file rather than growing the store.
 
-Deletes are deliberately **not** cascaded from the database. A key can be referenced by more
-than one row, so removing a finding must not remove bytes another finding is still pointing
-at; reclaiming unreferenced blobs is a sweep, and a sweep that has not been written is a
-disclosed limitation rather than a silent one.
+Deleting is refcounted rather than cascaded. A key can be referenced by more than one row —
+that is the whole point of hashing the content — so removing a finding must not remove bytes
+another finding is still pointing at. The store deletes a blob only when the database says
+nothing references it any more; see :func:`inspection_report.store.db.forget_orphan_blobs`.
 """
 
 from __future__ import annotations
@@ -57,6 +57,8 @@ class BlobStore(Protocol):
     def get(self, key: str) -> bytes | None: ...
 
     def exists(self, key: str) -> bool: ...
+
+    def delete(self, key: str) -> None: ...
 
 
 class FilesystemBlobStore:
@@ -117,6 +119,15 @@ class FilesystemBlobStore:
 
     def exists(self, key: str) -> bool:
         return self._path(key).is_file()
+
+    def delete(self, key: str) -> None:
+        """Remove a blob. Missing is not an error — the caller wants it gone either way."""
+        try:
+            self._path(key).unlink(missing_ok=True)
+        except OSError as exc:
+            # A blob that will not delete is a housekeeping problem, not a reason to fail
+            # the delete the user asked for: the row is already gone.
+            _log.warning("blob_delete_failed", extra={"key": key[:12], "error": str(exc)[:80]})
 
 
 def default_store() -> BlobStore:

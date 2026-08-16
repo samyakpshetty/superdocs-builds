@@ -210,6 +210,18 @@ The inspection systems, the severity scale and the language rail are all data to
 `config/`. Adding a seventh system, grading on four levels instead of five, or operating
 under a firm's own wording rules is a change to YAML and to nothing else.
 
+## Removing things
+
+An inspection, a finding and a photograph can each be deleted, and each asks first — in
+place, not in a dialog, and not in red, because colour means severity here and nowhere else.
+The question names what goes: *"Delete 14 Alder Lane and its 8 findings? This cannot be
+undone."*
+
+Deleting an inspection is refused while a review is in flight, since the worker is holding
+it. Blobs are **refcounted, not cascaded**: a key is a content hash, so two findings that
+photographed the same thing share one file, and the bytes are reclaimed only when the last
+row referencing them is gone.
+
 ## Long work does not block a request
 
 Asking SuperDocs to rewrite every finding takes as long as it takes — their own guidance says

@@ -118,6 +118,12 @@ it now also stands as the check on anything the AI touched.
   finding's own observation or recommendation is reported and never fails; anything else got
   into the document another way, and that is the failure worth having. Conflated, the second
   hides behind the first.
+- **Deleting asks once, in place, and never in red.** An inspection, a finding and a
+  photograph can each be removed, and the question names what goes rather than saying "are
+  you sure". Not a `confirm()` dialog: on a phone, mid-job, a modal appears over the thing
+  you were looking at. Not red either — colour is spent on severity, so the weight of a
+  destructive action comes from the sentence and from having to say it twice. Blobs are
+  refcounted rather than cascaded, because a content hash is shared by design.
 - **A refused rewrite leaves the original standing** rather than blocking the report. The
   document loses polish, never content.
 - **Refusing valid work is a failure of equal weight to permitting a bad claim.** A rail that

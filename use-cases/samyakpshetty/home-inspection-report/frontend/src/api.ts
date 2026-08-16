@@ -174,6 +174,12 @@ export const api = {
 
   job: (jobId: string) => request<JobStatus>(`/api/jobs/${jobId}`),
 
+  /** Destructive, and there is no undo — every caller asks first. */
+  deleteInspection: (id: string) =>
+    request<void>(`/api/inspections/${id}`, { method: "DELETE" }),
+  deleteFinding: (id: string) => request<void>(`/api/findings/${id}`, { method: "DELETE" }),
+  deletePhoto: (id: string) => request<void>(`/api/photos/${id}`, { method: "DELETE" }),
+
   /** The most recent job for an inspection, so a reload finds its way back to one. */
   latestJob: (id: string) => request<JobStatus>(`/api/inspections/${id}/job`),
 

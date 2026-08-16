@@ -316,6 +316,109 @@ def save_photo(
     conn.commit()
 
 
+# The three ways a photograph can be reached, as whole statements rather than a clause
+# pasted into an f-string. Nothing user-supplied ever reached that f-string, but a query
+# assembled by concatenation is a pattern worth not having in a file that handles deletes.
+_KEYS_BY_PHOTO = "SELECT storage_key, thumbnail_key FROM photos WHERE id = %s"
+_KEYS_BY_FINDING = "SELECT storage_key, thumbnail_key FROM photos WHERE finding_id = %s"
+_KEYS_BY_INSPECTION = (
+    "SELECT storage_key, thumbnail_key FROM photos "
+    "WHERE finding_id IN (SELECT id FROM findings WHERE inspection_id = %s)"
+)
+
+
+def _keys_for(conn: psycopg.Connection[dict[str, Any]], query: str, param: Any) -> set[str]:
+    """Every blob key reachable from one row, before that row is deleted."""
+    with conn.cursor() as cur:
+        cur.execute(query, (param,))
+        keys: set[str] = set()
+        for row in cur.fetchall():
+            keys.update(k for k in (row["storage_key"], row["thumbnail_key"]) if k)
+    return keys
+
+
+def forget_orphan_blobs(
+    conn: psycopg.Connection[dict[str, Any]],
+    keys: set[str],
+    *,
+    store: BlobStore | None = None,
+) -> int:
+    """Delete blobs nothing points at any more. Returns how many.
+
+    Refcounted rather than cascaded, because a key is a content hash: two findings that
+    photographed the same thing share one blob, and deleting one finding must not take the
+    other's evidence with it. Called after the rows are gone, so the database is the
+    authority on what is still referenced.
+    """
+    if not keys:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT storage_key AS k FROM photos WHERE storage_key = ANY(%s) "
+            "UNION SELECT DISTINCT thumbnail_key FROM photos WHERE thumbnail_key = ANY(%s)",
+            (list(keys), list(keys)),
+        )
+        still_used = {row["k"] for row in cur.fetchall() if row["k"]}
+
+    blob_store = store or blobs.default_store()
+    orphans = keys - still_used
+    for key in orphans:
+        blob_store.delete(key)
+    if orphans:
+        _log.info("blobs_reclaimed", extra={"count": len(orphans)})
+    return len(orphans)
+
+
+def delete_photo(
+    conn: psycopg.Connection[dict[str, Any]], photo_id: UUID, *, store: BlobStore | None = None
+) -> bool:
+    """Remove one photograph. Returns whether there was one."""
+    keys = _keys_for(conn, _KEYS_BY_PHOTO, photo_id)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM photos WHERE id = %s RETURNING id", (photo_id,))
+        gone = cur.fetchone() is not None
+    conn.commit()
+    if gone:
+        forget_orphan_blobs(conn, keys, store=store)
+    return gone
+
+
+def delete_finding(
+    conn: psycopg.Connection[dict[str, Any]], finding_id: UUID, *, store: BlobStore | None = None
+) -> bool:
+    """Remove one finding and the photographs attached to it."""
+    keys = _keys_for(conn, _KEYS_BY_FINDING, finding_id)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM findings WHERE id = %s RETURNING id", (finding_id,))
+        gone = cur.fetchone() is not None
+    conn.commit()
+    if gone:
+        forget_orphan_blobs(conn, keys, store=store)
+    return gone
+
+
+def delete_inspection(
+    conn: psycopg.Connection[dict[str, Any]],
+    inspection_id: UUID,
+    *,
+    store: BlobStore | None = None,
+) -> bool:
+    """Remove an inspection and everything under it.
+
+    Findings, photographs, proposals and jobs go by cascade; the blobs are reclaimed here
+    because the filesystem is not part of the transaction.
+    """
+    keys = _keys_for(conn, _KEYS_BY_INSPECTION, inspection_id)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM inspections WHERE id = %s RETURNING id", (inspection_id,))
+        gone = cur.fetchone() is not None
+    conn.commit()
+    if gone:
+        forget_orphan_blobs(conn, keys, store=store)
+        _log.info("inspection_deleted", extra={"inspection": str(inspection_id)})
+    return gone
+
+
 def remember_upload(
     conn: psycopg.Connection[dict[str, Any]], *, sha256: str, remote_url: str
 ) -> None:

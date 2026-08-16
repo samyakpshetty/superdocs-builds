@@ -39,11 +39,29 @@ def conn():  # type: ignore[no-untyped-def]
         pytest.skip(f"needs a Postgres ({type(exc).__name__}); try `make test-db`")
     with db.connect() as connection:
         db.apply_schema(connection)
+        before = _inspection_ids(connection)
         yield connection
+        # Remove only what this test made, so a developer's own data survives a test run.
+        made = _inspection_ids(connection) - before
+        if made:
+            with connection.cursor() as cur:
+                cur.execute("DELETE FROM inspections WHERE id = ANY(%s)", (list(made),))
+            connection.commit()
 
 
-def _seeded(connection) -> object:  # type: ignore[no-untyped-def]
-    """One inspection with a photograph on its first finding."""
+def _inspection_ids(connection) -> set:  # type: ignore[no-untyped-def]
+    with connection.cursor() as cur:
+        cur.execute("SELECT id FROM inspections")
+        return {row["id"] for row in cur.fetchall()}
+
+
+def _seeded(connection, *, store=None) -> object:  # type: ignore[no-untyped-def]
+    """One inspection with a photograph on its first finding.
+
+    Registered with the fixture so it is removed afterwards. These tests run against the same
+    database the application uses, and leaving rows behind filled the inspector's list with
+    173 copies of the sample property — a test that litters the product it is testing.
+    """
     inspection = sample.sample_inspection()
     inspection.findings = inspection.findings[:2]
     db.save_inspection(connection, inspection)
@@ -57,6 +75,7 @@ def _seeded(connection) -> object:  # type: ignore[no-untyped-def]
         photo=photo,
         data=cleaned.data,
         thumbnail=cleaned.thumbnail,
+        store=store,
     )
     return inspection
 
@@ -239,3 +258,92 @@ class TestMigrations:
         with pytest.raises(migrate.MigrationError) as exc:
             migrate.apply(conn, tmp_path / "nope")
         assert "MIGRATIONS_DIR" in str(exc.value)
+
+
+class TestDeleting:
+    """Removing things, and the blobs that go with them.
+
+    A blob is keyed by its content hash, so two findings that photographed the same thing
+    share one file. Deleting is therefore refcounted, not cascaded — cascading would take
+    the other finding's evidence with it.
+    """
+
+    def _blob_count(self, tmp_path) -> int:  # type: ignore[no-untyped-def]
+        return len([p for p in tmp_path.rglob("*") if p.is_file()])
+
+    def test_deleting_a_photograph_reclaims_its_blob(self, conn, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from inspection_report.store.blobs import FilesystemBlobStore
+
+        store = FilesystemBlobStore(tmp_path)
+        inspection = _seeded(conn, store=store)
+        assert self._blob_count(tmp_path) == 2  # the photograph and its thumbnail
+
+        photo = inspection.findings[0].photos[0]  # type: ignore[attr-defined]
+        assert db.delete_photo(conn, photo.id, store=store)
+        assert self._blob_count(tmp_path) == 0
+
+    def test_a_shared_blob_survives_deleting_one_of_its_rows(self, conn, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The property that makes cascading wrong."""
+        from inspection_report.domain.models import Photo
+        from inspection_report.store.blobs import FilesystemBlobStore
+
+        store = FilesystemBlobStore(tmp_path)
+        inspection = _seeded(conn, store=store)
+        original = inspection.findings[0].photos[0]  # type: ignore[attr-defined]
+        data = sample.sample_photo_data()[original.filename]
+        cleaned = clean(data, filename=original.filename)
+
+        # A second finding photographs the same thing: same bytes, same hash, same blob.
+        twin = Photo(
+            sha256=original.sha256,
+            filename=original.filename,
+            content_type=original.content_type,
+            size_bytes=original.size_bytes,
+            width=original.width,
+            height=original.height,
+        )
+        db.save_photo(
+            conn,
+            finding_id=inspection.findings[1].id,  # type: ignore[attr-defined]
+            photo=twin,
+            data=cleaned.data,
+            thumbnail=cleaned.thumbnail,
+            store=store,
+        )
+        assert self._blob_count(tmp_path) == 2, "identical bytes must share one blob"
+
+        db.delete_photo(conn, original.id, store=store)
+        assert self._blob_count(tmp_path) == 2, "the other finding's evidence was destroyed"
+
+        db.delete_photo(conn, twin.id, store=store)
+        assert self._blob_count(tmp_path) == 0, "the last reference should reclaim it"
+
+    def test_deleting_a_finding_takes_its_photographs(self, conn, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from inspection_report.store.blobs import FilesystemBlobStore
+
+        store = FilesystemBlobStore(tmp_path)
+        inspection = _seeded(conn, store=store)
+        first = inspection.findings[0]  # type: ignore[attr-defined]
+
+        assert db.delete_finding(conn, first.id, store=store)
+        reloaded = db.load_inspection(conn, inspection.id)  # type: ignore[attr-defined]
+        assert reloaded is not None
+        assert first.id not in [f.id for f in reloaded.findings]
+        assert self._blob_count(tmp_path) == 0
+
+    def test_deleting_an_inspection_takes_everything(self, conn, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from inspection_report.store.blobs import FilesystemBlobStore
+
+        store = FilesystemBlobStore(tmp_path)
+        inspection = _seeded(conn, store=store)
+
+        assert db.delete_inspection(conn, inspection.id, store=store)  # type: ignore[attr-defined]
+        assert db.load_inspection(conn, inspection.id) is None  # type: ignore[attr-defined]
+        assert self._blob_count(tmp_path) == 0
+
+    def test_deleting_something_that_is_not_there_says_so(self, conn) -> None:  # type: ignore[no-untyped-def]
+        from uuid import uuid4
+
+        assert db.delete_inspection(conn, uuid4()) is False
+        assert db.delete_finding(conn, uuid4()) is False
+        assert db.delete_photo(conn, uuid4()) is False

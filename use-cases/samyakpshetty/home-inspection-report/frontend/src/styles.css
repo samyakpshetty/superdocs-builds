@@ -371,9 +371,24 @@ textarea { min-height: 90px; resize: vertical; }
 }
 .diff__text--flagged { border-left-color: var(--bad) !important; }
 
+/* --------------------------------------------------------------- confirm
+ *
+ * A destructive action asks in place rather than in a dialog. Not red: colour means severity
+ * in this product and nowhere else, so the weight comes from the sentence and from having to
+ * say it twice.
+ */
+
+.confirm {
+  display: inline-flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+  padding: 0.3rem 0 0.3rem 0.7rem;
+  border-left: 2px solid var(--ink);
+}
+.confirm__ask { font-size: var(--step--1); color: var(--ink); max-width: 46ch; }
+
 /* ---------------------------------------------------------------- photos */
 
-.thumbs { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.thumbs { display: flex; gap: 0.9rem; flex-wrap: wrap; align-items: flex-start; }
+.thumb-wrap { margin: 0; display: grid; gap: 0.3rem; justify-items: start; }
 .thumb {
   width: 96px; height: 72px; object-fit: cover;
   border-radius: var(--radius); border: 1px solid var(--line);
@@ -533,6 +548,8 @@ mark.flag {
 .finding { display: grid; gap: 0.55rem; padding: 1rem 0 1.1rem; border-top: 1px solid var(--line); }
 .finding:first-of-type { border-top: 0; padding-top: 0.25rem; }
 .finding__head { display: flex; gap: 0.7rem; align-items: baseline; flex-wrap: wrap; }
+/* Pushed to the end of the line so removing a finding is never next to reading one. */
+.finding__actions { margin-left: auto; }
 .finding__where {
   font-family: var(--serif); font-size: var(--step-1); font-weight: 600; letter-spacing: -0.01em;
 }
