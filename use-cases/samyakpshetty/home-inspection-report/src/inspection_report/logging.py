@@ -101,5 +101,71 @@ def setup_logging(log_format: str = "json", level: int = logging.INFO) -> None:
     root.addHandler(handler)
 
 
+# Keys `logging` already owns on a LogRecord. Passing one in `extra=` does not shadow it —
+# it raises KeyError from inside the logging call, which means a log line takes down the
+# thing it was describing. It cost a whole boot to find: `extra={"name": ...}` in the
+# migration runner turned a working migration into a startup failure reported as a database
+# outage. Renaming the two offenders fixes the two; refusing the key fixes the class.
+_RESERVED = frozenset(
+    {
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "taskName",
+        "thread",
+        "threadName",
+    }
+)
+
+
+class _SafeExtraLogger(logging.Logger):
+    """A logger that will not let a reserved key in ``extra`` take a request down.
+
+    The key is renamed rather than dropped, so the value still reaches the log line and the
+    mistake is visible in it — the alternative is losing the field silently, which is how you
+    end up debugging by absence.
+    """
+
+    def makeRecord(  # type: ignore[override]
+        self,
+        name: str,
+        level: int,
+        fn: str,
+        lno: int,
+        msg: object,
+        args: Any,
+        exc_info: Any,
+        func: str | None = None,
+        extra: dict[str, Any] | None = None,
+        sinfo: str | None = None,
+    ) -> logging.LogRecord:
+        if extra:
+            clashes = _RESERVED & extra.keys()
+            if clashes:
+                extra = {(f"extra_{k}" if k in clashes else k): v for k, v in extra.items()}
+                extra["logging_key_clash"] = ",".join(sorted(clashes))
+        return super().makeRecord(name, level, fn, lno, msg, args, exc_info, func, extra, sinfo)
+
+
+logging.setLoggerClass(_SafeExtraLogger)
+
+
 def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)

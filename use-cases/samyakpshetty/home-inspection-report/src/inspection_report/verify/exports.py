@@ -189,11 +189,23 @@ def verify(
     )
 
     # 5. The photographs are in the file, not merely referenced.
-    expected_photos = sum(1 for f in inspection.findings for p in f.photos if p.uploaded)
+    #
+    #    Counted against what the inspector *recorded*, not against what happened to reach
+    #    the service. Comparing only against uploaded photographs made the check vacuous in
+    #    the exact case it exists for: an inspection holding eight photographs whose uploads
+    #    never happened exported with none, and this said "0 embedded, 0 expected — PASS".
+    #    A report that quietly loses its evidence is the failure, not the bookkeeping.
+    recorded = sum(len(f.photos) for f in inspection.findings)
+    uploaded = sum(1 for f in inspection.findings for p in f.photos if p.uploaded)
+    detail = f"{image_count} embedded, {recorded} recorded"
+    if uploaded < recorded:
+        detail += f" ({recorded - uploaded} never reached the service)"
     report.add(
         "photographs are embedded in the file",
-        (image_count >= expected_photos) if expect_photos else True,
-        f"{image_count} embedded, {expected_photos} expected",
+        True
+        if not expect_photos
+        else (image_count >= uploaded and not (recorded > 0 and image_count == 0)),
+        detail,
     )
 
     # 6. The language rail holds in the finished bytes — not just at the gate. But *whose*

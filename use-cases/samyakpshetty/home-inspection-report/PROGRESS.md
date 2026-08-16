@@ -232,11 +232,13 @@ database. What is not ready is the operational shape around it.
 2. **There are no migrations.** `apply_schema` is `CREATE TABLE IF NOT EXISTS`, so an
    existing deployment never gets a new column — the table already exists and the statement
    does nothing. Fine for a fresh clone, unusable for a second release. Wants Alembic.
-3. **Photographs are full-resolution BYTEA in Postgres.** A firm doing five inspections a day
-   with thirty photographs each puts hundreds of gigabytes a year into the database. It works
-   and it is transactional, which is why it was the right call for a build that has to run
-   from one `docker compose up` — but the production shape is object storage with the
-   database holding keys.
+3. ~~**Photographs are full-resolution BYTEA in Postgres.**~~ **Fixed.** Bytes live in a blob
+   store keyed by their content hash — which the build already treated as a photograph's
+   identity, so two findings sharing one photograph share one file. A filesystem store ships
+   and backs the default deployment; S3 or GCS is a class satisfying the same three methods.
+   The old columns are kept nullable and the read path falls back to them, so migration 0002
+   is a migration rather than a data loss. Unreferenced blobs are not reclaimed — a key can
+   be shared, so that is a sweep, and it is not written.
 4. ~~**The 8 MB upload cap is below what modern phones produce.**~~ **Fixed**, and it was
    worse than a cap: HEIC — the iPhone camera default since iOS 11 — was refused outright.
    HEIC is decoded and stored as JPEG, uploads are accepted to 25 MB and downscaled to

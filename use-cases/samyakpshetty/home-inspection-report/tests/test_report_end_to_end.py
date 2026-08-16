@@ -402,3 +402,52 @@ class TestWhoseWordsTrippedTheRail:
         named = {c.name: c for c in card.checks}
         assert not named["no certification language the system produced"].passed
         assert not card.passed, "a generated claim must still fail the export"
+
+
+class TestTheEvidenceCannotGoMissingQuietly:
+    """A report that loses its photographs must not verify as fine.
+
+    The photo check used to count against photographs that had *reached the service*, so an
+    inspection holding eight whose uploads never happened exported with none and the check
+    said "0 embedded, 0 expected — PASS". The bookkeeping was right and the report was wrong.
+    """
+
+    def test_recorded_but_unembedded_photographs_fail_the_export(self) -> None:
+        inspection = sample.sample_inspection()
+        result = pipeline.build(
+            inspection,
+            format_html(),
+            {},  # no bytes to upload, so nothing reaches the document
+            FakeSuperDocsClient(),
+            session_id="no-photos",
+            polish=False,
+            settle_s=0.0,
+        )
+        card = verify_exports.verify(
+            data=result.exports["docx"].content, fmt="docx", inspection=inspection
+        )
+        photo_check = next(c for c in card.checks if "photograph" in c.name)
+        assert not photo_check.passed, "a report that lost its evidence verified as fine"
+        assert "8 recorded" in photo_check.detail
+        assert "never reached the service" in photo_check.detail
+
+    def test_a_format_that_carries_no_photographs_is_still_fine(self) -> None:
+        """The tightened check must not start failing the repair list, which has none."""
+        inspection = sample.sample_inspection()
+        template = format_html("repair_priority")
+        result = pipeline.build(
+            inspection,
+            template,
+            sample.sample_photo_data(),
+            FakeSuperDocsClient(),
+            session_id="no-photo-format",
+            polish=False,
+            settle_s=0.0,
+        )
+        card = verify_exports.verify(
+            data=result.exports["docx"].content,
+            fmt="docx",
+            inspection=inspection,
+            expect_photos=binding.carries_photos(template, SYSTEM_NAMES),
+        )
+        assert card.passed, card.render()

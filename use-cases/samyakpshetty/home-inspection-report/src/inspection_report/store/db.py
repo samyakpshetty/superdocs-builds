@@ -28,6 +28,8 @@ from psycopg.rows import dict_row
 
 from inspection_report.domain.models import Finding, Inspection, Inspector, Photo, Property
 from inspection_report.logging import get_logger
+from inspection_report.store import blobs
+from inspection_report.store.blobs import BlobStore
 
 _log = get_logger("inspection_report.store")
 
@@ -269,15 +271,32 @@ def save_photo(
     data: bytes,
     thumbnail: bytes | None,
     position: int = 0,
+    store: BlobStore | None = None,
 ) -> None:
+    """Keep one photograph: the bytes in the blob store, a key and its metadata in the row.
+
+    The blob is written **before** the row, so a crash between the two leaves an unreferenced
+    file rather than a row pointing at bytes that were never stored. Keys are content hashes,
+    so re-writing after a crash overwrites an identical file.
+    """
+    store = store or blobs.default_store()
+    key = photo.sha256
+    thumb_key = blobs.thumbnail_key(photo.sha256) if thumbnail else None
+
+    store.put(key, data)
+    if thumbnail is not None and thumb_key is not None:
+        store.put(thumb_key, thumbnail)
+
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO photos (id, finding_id, sha256, filename, content_type, size_bytes,
-                width, height, caption, position, bytes, thumbnail)
+                width, height, caption, position, storage_key, thumbnail_key)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET caption = EXCLUDED.caption,
-                position = EXCLUDED.position
+                position = EXCLUDED.position,
+                storage_key = EXCLUDED.storage_key,
+                thumbnail_key = EXCLUDED.thumbnail_key
             """,
             (
                 photo.id,
@@ -290,8 +309,8 @@ def save_photo(
                 photo.height,
                 photo.caption,
                 position,
-                data,
-                thumbnail,
+                key,
+                thumb_key,
             ),
         )
     conn.commit()
@@ -458,39 +477,76 @@ def list_inspections(conn: psycopg.Connection[dict[str, Any]]) -> list[dict[str,
 
 
 def photo_bytes(
-    conn: psycopg.Connection[dict[str, Any]], photo_id: UUID, *, thumbnail: bool = False
+    conn: psycopg.Connection[dict[str, Any]],
+    photo_id: UUID,
+    *,
+    thumbnail: bool = False,
+    store: BlobStore | None = None,
 ) -> tuple[bytes, str] | None:
-    column = "thumbnail" if thumbnail else "bytes"
+    """One photograph's bytes, from the blob store — or from the row if it predates it.
+
+    The fallback is what makes 0002 a migration rather than a data loss: a row written before
+    the blob store still carries its bytes and still serves. It goes when a deployment has
+    backfilled and a later migration drops the columns.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT {column} AS data, content_type FROM photos WHERE id = %s",
+            "SELECT storage_key, thumbnail_key, bytes, thumbnail, content_type "
+            "FROM photos WHERE id = %s",
             (photo_id,),
         )
         row = cur.fetchone()
-    if row is None or row["data"] is None:
+    if row is None:
         return None
+
     mime = "image/jpeg" if thumbnail else row["content_type"]
-    return bytes(row["data"]), mime
+    key = row["thumbnail_key"] if thumbnail else row["storage_key"]
+    if key:
+        data = (store or blobs.default_store()).get(key)
+        if data is not None:
+            return data, mime
+        # A key that points at nothing is worth a line: the row and the store disagree.
+        _log.error("blob_missing", extra={"photo": str(photo_id), "key": key[:12]})
+
+    legacy = row["thumbnail"] if thumbnail else row["bytes"]
+    if legacy is None:
+        return None
+    return bytes(legacy), mime
 
 
 def photo_data_for(
-    conn: psycopg.Connection[dict[str, Any]], inspection_id: UUID
+    conn: psycopg.Connection[dict[str, Any]],
+    inspection_id: UUID,
+    *,
+    store: BlobStore | None = None,
 ) -> dict[str, bytes]:
     """Every photograph's cleaned bytes for one inspection, keyed by filename.
 
     Keyed by filename because that is what the render pipeline asks for; identity for
     upload purposes is still the content hash.
     """
+    blob_store = store or blobs.default_store()
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT p.filename, p.bytes FROM photos p
+            SELECT p.filename, p.storage_key, p.bytes FROM photos p
             JOIN findings f ON f.id = p.finding_id
             WHERE f.inspection_id = %s
             """,
             (inspection_id,),
         )
-        return {r["filename"]: bytes(r["bytes"]) for r in cur.fetchall()}
+        rows = cur.fetchall()
+
+    out: dict[str, bytes] = {}
+    for row in rows:
+        data = blob_store.get(row["storage_key"]) if row["storage_key"] else None
+        if data is None and row["bytes"] is not None:
+            data = bytes(row["bytes"])  # written before the blob store; still serves
+        if data is None:
+            _log.error("blob_missing", extra={"photo_filename": row["filename"]})
+            continue
+        out[row["filename"]] = data
+    return out
 
 
 def load_proposals(

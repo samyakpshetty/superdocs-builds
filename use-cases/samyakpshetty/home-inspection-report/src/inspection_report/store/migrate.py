@@ -100,7 +100,7 @@ def apply(conn: psycopg.Connection[dict[str, Any]], directory: Path | None = Non
         for path in files:
             if path.name in applied:
                 continue
-            _log.info("migration_applying", extra={"name": path.name})
+            _log.info("migration_applying", extra={"migration": path.name})
             cur.execute(path.read_text())
             cur.execute(
                 "INSERT INTO schema_migrations (name, sha256) VALUES (%s, %s)",

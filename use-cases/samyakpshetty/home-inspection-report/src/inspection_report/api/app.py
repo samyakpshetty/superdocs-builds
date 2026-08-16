@@ -20,6 +20,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from psycopg import OperationalError
 from pydantic import BaseModel, Field
 
 from inspection_report.domain import catalogue
@@ -95,17 +96,31 @@ async def _refuse_oversized_bodies(request: Any, call_next: Any) -> Any:
     return await call_next(request)
 
 
+# Set when the schema could not be brought up to date. Distinct from "the database was not
+# reachable at boot", which is transient and recovers on its own — a migration that failed
+# means the code and the schema disagree, and every request after it is suspect.
+_SCHEMA_ERROR: str | None = None
+
+
 @app.on_event("startup")
 def _startup() -> None:
+    global _SCHEMA_ERROR
     setup_logging(os.environ.get("LOG_FORMAT", "json"))
     try:
         with db.connect() as conn:
             db.apply_schema(conn)
+        _SCHEMA_ERROR = None
         _log.info("schema_ready")
-    except Exception as exc:  # pragma: no cover - depends on a live database
-        # Degrade rather than refuse to boot: /health and the catalogue still answer, and the
-        # error names the cause instead of a stack trace in a browser console.
+    except OperationalError as exc:
+        # The database was not up yet. Degrade rather than refuse to boot — /health and the
+        # catalogue still answer, /ready says no, and the next request reconnects.
         _log.error("database_unavailable", extra={"error": type(exc).__name__})
+    except Exception as exc:  # pragma: no cover - depends on a live database
+        # Anything else here is the schema itself failing, which used to be logged as
+        # "database_unavailable" and looked like a blip. It is not: the code and the schema
+        # disagree, and pretending otherwise is how a deployment serves a broken shape.
+        _SCHEMA_ERROR = f"{type(exc).__name__}: {exc}"
+        _log.error("schema_migration_failed", extra={"error": _SCHEMA_ERROR[:300]})
 
 
 def get_conn() -> Any:
@@ -178,9 +193,17 @@ def ready() -> Response:
     "ok" while every request 503s is how a green dashboard hides an outage. Anything routing
     traffic should watch this one.
     """
+    if _SCHEMA_ERROR is not None:
+        return Response(
+            status_code=503,
+            media_type="application/json",
+            content=json.dumps({"status": "degraded", "schema": _SCHEMA_ERROR}),
+        )
     try:
         with db.connect() as conn, conn.cursor() as cur:
             cur.execute("SELECT 1")
+            cur.execute("SELECT count(*) AS n FROM schema_migrations")
+            applied = int((cur.fetchone() or {"n": 0})["n"])
     except Exception as exc:
         _log.warning("not_ready", extra={"error": type(exc).__name__})
         return Response(
@@ -191,7 +214,9 @@ def ready() -> Response:
     return Response(
         status_code=200,
         media_type="application/json",
-        content=json.dumps({"status": "ready", "database": "reachable"}),
+        content=json.dumps(
+            {"status": "ready", "database": "reachable", "migrations_applied": applied}
+        ),
     )
 
 

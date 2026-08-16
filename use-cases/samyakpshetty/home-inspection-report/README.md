@@ -200,6 +200,18 @@ The inspection systems, the severity scale and the language rail are all data to
 `config/`. Adding a seventh system, grading on four levels instead of five, or operating
 under a firm's own wording rules is a change to YAML and to nothing else.
 
+## Where photographs live
+
+Bytes go to a blob store; the database keeps a key. The key **is** the photograph's sha256,
+which the build already used as its identity, so two findings sharing a photograph share one
+file and a retry after a crash overwrites a byte-identical blob rather than growing the
+store. A filesystem store ships and is backed by a named Docker volume; swapping in S3 or GCS
+is one class satisfying `put` / `get` / `exists`.
+
+Keys are validated as hex hashes before they touch the filesystem, so a key can never be read
+as a path. Rows written before this still carry their bytes and still serve — the read path
+falls back to the column.
+
 ## Schema changes
 
 The schema is a set of ordered SQL files in `migrations/`, applied once each and recorded
