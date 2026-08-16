@@ -216,19 +216,22 @@ Kept because the fixes are the interesting part.
   embedded, and the same verifier run over the live-exported bytes.
 - The exported PDF was opened and looked at, not just parsed.
 
-## Is this production ready? No, and these are the five reasons
+## Is this production ready? Four of the five gaps are closed
 
 The domain logic is production-grade: structure is deterministic, the rail is enforced in
 code, the export is verified by reading the finished bytes, photographs are cleaned, and the
 data-loss and concurrency faults found by testing are fixed and covered against a real
 database. What is not ready is the operational shape around it.
 
-1. **`prepare` blocks an HTTP request for as long as the AI takes.** `_poll` waits up to
-   240 seconds inside the request, pinning a database connection. SuperDocs' own guidance
-   says an operation can take "from thirty seconds to several minutes", so this is not a
-   pathological case — it is the normal one. Behind any proxy with a 60-second timeout the
-   client gets a 504 while the operation is still charged. This wants a job row and a polling
-   endpoint, which is a day's work and the single largest gap.
+1. ~~**`prepare` blocks an HTTP request for as long as the AI takes.**~~ **Fixed.** It
+   enqueues and answers 202 in about ten milliseconds; a separate worker claims the row with
+   `FOR UPDATE SKIP LOCKED` and the interface polls. A separate process rather than a
+   background task inside the API, because a background task dies with the deploy and this
+   work has already been paid for. The worker holds a lease it renews; when it dies the job
+   is **failed rather than retried** — re-running something that may already have spent an
+   operation would spend another, and nothing was applied, so the honest answer is to say it
+   stopped. One live job per inspection is a partial unique index, so two API processes
+   cannot both accept one.
 2. **There are no migrations.** `apply_schema` is `CREATE TABLE IF NOT EXISTS`, so an
    existing deployment never gets a new column — the table already exists and the statement
    does nothing. Fine for a fresh clone, unusable for a second release. Wants Alembic.
@@ -243,9 +246,11 @@ database. What is not ready is the operational shape around it.
    worse than a cap: HEIC — the iPhone camera default since iOS 11 — was refused outright.
    HEIC is decoded and stored as JPEG, uploads are accepted to 25 MB and downscaled to
    2048px before storage.
-5. **One firm, one process, no queue.** No multi-tenancy, no background workers, no retry of
-   a failed AI pass beyond the transport-level backoff, and no metrics or alerting beyond
-   structured logs.
+5. **One firm, no multi-tenancy.** The queue and the workers arrived with (1) — scale is a
+   replica count, and two are safe. What remains is multi-tenancy, and that is not a missing
+   feature so much as a missing prerequisite: without authentication there is nothing to scope
+   a tenant *to*, and authentication is deliberately out of scope here. Metrics beyond
+   structured logs and per-stage timings are also absent.
 
 None of these are hidden by the interface — `/ready` reports whether the database is actually
 reachable, distinct from `/health`, which stays a liveness check so a database blip does not

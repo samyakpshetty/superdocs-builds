@@ -52,6 +52,29 @@ services:
     working_dir: /app
     command: ["uvicorn", "inspection_report.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
+  # The slow work. Separate from the API because a background task inside the web process
+  # dies with it, and a run that vanishes on a deploy has already been paid for. Scale it by
+  # raising the replica count — the claim is FOR UPDATE SKIP LOCKED, so two are safe.
+  worker:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://inspect:inspect@db:5432/inspect
+      PROVIDER: ${PROVIDER:-fake}
+      SUPERDOCS_API_KEY: ${SUPERDOCS_API_KEY:-}
+      PHOTO_STORE_DIR: /app/data/photos
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./templates:/app/templates
+      - ./migrations:/app/migrations
+      - photo-data:/app/data/photos
+    working_dir: /app
+    command: ["python", "-m", "inspection_report.worker"]
+
   web:
     build:
       context: ./frontend

@@ -34,7 +34,7 @@ from inspection_report.domain.models import (
 from inspection_report.logging import get_logger, setup_logging
 from inspection_report.photos.pipeline import MAX_UPLOAD_BYTES, PhotoRejected, clean
 from inspection_report.phrasing import rail
-from inspection_report.store import db
+from inspection_report.store import db, jobs
 from inspection_report.templates import docx_html
 
 _log = get_logger("inspection_report.api")
@@ -489,10 +489,16 @@ def prepare_report(
     inspection_id: UUID,
     model_tier: str = "core",
     conn: Any = Depends(get_conn),
-) -> dict[str, Any]:
-    """Render, upload, and ask for the rewrites. Stops at the gate."""
-    from inspection_report.render import pipeline
+) -> Response:
+    """Queue the rewrite pass and return immediately.
 
+    This used to do the work inline, which meant the request stayed open for as long as
+    SuperDocs took — their own guidance says thirty seconds to several minutes. Any proxy
+    with a sixty-second timeout returned 504 to the inspector while the operation was still
+    charged, and a database connection stayed pinned throughout.
+
+    Now it enqueues and answers 202 with a job to poll. The work happens in the worker.
+    """
     inspection = _load(conn, inspection_id)
     if not inspection.findings:
         raise HTTPException(
@@ -500,20 +506,44 @@ def prepare_report(
             detail="this inspection has no findings yet. Record at least one before "
             "preparing the report.",
         )
+    try:
+        job = jobs.enqueue(
+            conn,
+            inspection_id=inspection_id,
+            kind="prepare",
+            payload={"model_tier": model_tier},
+        )
+    except jobs.JobConflict as exc:
+        # 409 rather than a second job: two reviews of one report is a mistake, and the
+        # database refuses it so two API processes cannot disagree about that.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return Response(
+        status_code=202,
+        media_type="application/json",
+        content=json.dumps({"job_id": str(job.id), "state": job.state}),
+    )
+
+
+def _run_prepare(conn: Any, *, inspection: Inspection, template: str, model_tier: str) -> Any:
+    """The slow path, lifted out of the request so the worker owns it.
+
+    Everything here was in the route. It is unchanged apart from where it runs, which is the
+    point: the fix is that nobody waits on it, not that it does something different.
+    """
+    from inspection_report.render import pipeline
 
     client = _client()
     try:
         result = pipeline.prepare(
             inspection,
-            _template_html(inspection.template_key),
-            db.photo_data_for(conn, inspection_id),
+            template,
+            db.photo_data_for(conn, inspection.id),
             client,
-            session_id=_session_id(inspection_id),
+            session_id=_session_id(inspection.id),
             known_uploads=db.known_uploads(conn),
             model_tier=model_tier,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"SuperDocs: {exc}") from exc
     finally:
         _release(client)
 
@@ -522,14 +552,45 @@ def prepare_report(
             if photo.remote_url:
                 db.remember_upload(conn, sha256=photo.sha256, remote_url=photo.remote_url)
 
-    db.clear_proposals(conn, inspection_id)
+    db.clear_proposals(conn, inspection.id)
     db.record_proposals(
         conn,
-        inspection_id=inspection_id,
+        inspection_id=inspection.id,
         rows=[_proposal_row(result, p) for p in result.proposals],
     )
     db.save_inspection(conn, inspection)
-    return _proposals_payload(result)
+    return result
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: UUID, conn: Any = Depends(get_conn)) -> dict[str, Any]:
+    """Where a queued piece of work got to."""
+    job = jobs.get(conn, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="no job with that id")
+    return {
+        "id": str(job.id),
+        "inspection_id": str(job.inspection_id),
+        "kind": job.kind,
+        "state": str(job.state),
+        "result": job.result,
+        "error": job.error,
+        "attempts": job.attempts,
+    }
+
+
+@app.get("/api/inspections/{inspection_id}/job")
+def get_latest_job(inspection_id: UUID, conn: Any = Depends(get_conn)) -> dict[str, Any]:
+    """The most recent job for this inspection, so a reload finds its way back to one."""
+    job = jobs.latest_for(conn, inspection_id)
+    if job is None:
+        return {"state": None}
+    return {
+        "id": str(job.id),
+        "state": str(job.state),
+        "result": job.result,
+        "error": job.error,
+    }
 
 
 @app.get("/api/inspections/{inspection_id}/proposals")

@@ -695,6 +695,75 @@ function Gate({
   }, [id]);
   useEffect(load, [load]);
 
+  /**
+   * Follow a queued review to its end.
+   *
+   * The work runs on the server, so this is a poll rather than an await: closing the page or
+   * reloading loses nothing, and coming back picks the job up again. `stopped` guards the
+   * timer against a component that has gone away mid-review.
+   */
+  const watchJob = useCallback(
+    (jobId: string) => {
+      let stopped = false;
+      const poll = () => {
+        if (stopped) return;
+        api
+          .job(jobId)
+          .then((job) => {
+            if (stopped) return;
+            if (job.state === "queued" || job.state === "running") {
+              window.setTimeout(poll, 1200);
+              return;
+            }
+            setBusy(null);
+            if (job.result?.ops_remaining != null) setOps(job.result.ops_remaining);
+            if (job.state === "failed") {
+              setError(job.error ?? "the review did not finish");
+              return;
+            }
+            setApprovals({});
+            api
+              .proposals(id)
+              .then((r) => {
+                setProposals(r.proposals);
+                const refused = r.proposals.filter((p) => !p.rail_clean).length;
+                say(
+                  refused === 0
+                    ? `${r.proposals.length} rewrites proposed.`
+                    : `${r.proposals.length} proposed, ${refused} refused by the language rail.`,
+                );
+              })
+              .catch((e: ApiError) => setError(e.message));
+          })
+          .catch((e: ApiError) => {
+            setBusy(null);
+            setError(e.message);
+          });
+      };
+      poll();
+      return () => {
+        stopped = true;
+      };
+    },
+    [id, say],
+  );
+
+  // A review already running when this page loads — a reload, or a second tab — is picked
+  // up rather than shown as an idle screen with a button that would be refused with a 409.
+  useEffect(() => {
+    let cancel: (() => void) | undefined;
+    api
+      .latestJob(id)
+      .then((job) => {
+        if (job.state === "queued" || job.state === "running") {
+          setBusy("prepare");
+          cancel = watchJob(job.id ?? "");
+        }
+      })
+      .catch(() => undefined);
+    return () => cancel?.();
+  }, [id, watchJob]);
+
   // Only a rail-clean proposal is anyone's to decide: a refusal is already settled and is
   // not offered as a choice.
   const undecided = (proposals ?? []).filter((p) => p.rail_clean && p.decision === "pending");
@@ -730,29 +799,26 @@ function Gate({
               setError(null);
               api
                 .prepare(id, tier)
-                .then((r) => {
-                  setProposals(r.proposals);
-                  setOps(r.ops_remaining);
-                  setApprovals({});
-                  const refused = r.proposals.filter((p) => !p.rail_clean).length;
-                  say(
-                    refused === 0
-                      ? `${r.proposals.length} rewrites proposed.`
-                      : `${r.proposals.length} proposed, ${refused} refused by the language rail.`,
-                  );
-                })
-                .catch((e: ApiError) => setError(e.message))
-                .finally(() => setBusy(null));
+                .then((r) => watchJob(r.job_id))
+                .catch((e: ApiError) => {
+                  setError(e.message);
+                  setBusy(null);
+                });
             }}
           >
             {busy === "prepare" ? "Asking…" : "Propose rewrites"}
           </button>
-          {ops !== null && <span className="hint">{ops.toLocaleString()} operations left</span>}
+          {/* `!== null` is not enough for a value that arrives as JSON: an absent field is
+              undefined, which passes that test and then fails on the method call. */}
+          {typeof ops === "number" && (
+            <span className="hint">{ops.toLocaleString()} operations left</span>
+          )}
         </div>
         {busy === "prepare" && (
           <p className="hint">
-            A large report can take a minute or more. Leaving this page is safe — the review
-            waits for you.
+            Queued. A large report can take a minute or more, and it runs on the server —
+            closing this page or reloading is safe, and the review will be here when you come
+            back.
           </p>
         )}
       </div>

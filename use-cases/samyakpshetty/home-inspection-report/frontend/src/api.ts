@@ -56,6 +56,16 @@ export type InspectionRow = {
 };
 
 export type Breach = { matched: string; category: string; why: string; suggest: string };
+export type JobState = "queued" | "running" | "done" | "failed" | null;
+
+export type JobStatus = {
+  id?: string;
+  state: JobState;
+  result?: { proposals: number; ops_charged: number; ops_remaining: number | null } | null;
+  error?: string | null;
+  attempts?: number;
+};
+
 export type Proposal = {
   change_id: string;
   before: string;
@@ -149,11 +159,23 @@ export const api = {
       json({ text }),
     ),
 
+  /**
+   * Queue the rewrite pass. Returns a job to poll, not the finished proposals.
+   *
+   * The work takes as long as SuperDocs takes — their own guidance says up to several
+   * minutes — so it no longer happens inside a request. A 409 means a review is already in
+   * flight for this inspection.
+   */
   prepare: (id: string, modelTier: string) =>
-    request<{ proposals: Proposal[]; ops_charged: number; ops_remaining: number | null }>(
+    request<{ job_id: string; state: JobState }>(
       `/api/inspections/${id}/prepare?model_tier=${encodeURIComponent(modelTier)}`,
       { method: "POST" },
     ),
+
+  job: (jobId: string) => request<JobStatus>(`/api/jobs/${jobId}`),
+
+  /** The most recent job for an inspection, so a reload finds its way back to one. */
+  latestJob: (id: string) => request<JobStatus>(`/api/inspections/${id}/job`),
 
   proposals: (id: string) =>
     request<{ job_id: string; proposals: Proposal[] }>(`/api/inspections/${id}/proposals`),

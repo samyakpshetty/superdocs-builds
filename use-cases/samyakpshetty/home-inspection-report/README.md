@@ -200,6 +200,20 @@ The inspection systems, the severity scale and the language rail are all data to
 `config/`. Adding a seventh system, grading on four levels instead of five, or operating
 under a firm's own wording rules is a change to YAML and to nothing else.
 
+## Long work does not block a request
+
+Asking SuperDocs to rewrite every finding takes as long as it takes — their own guidance says
+thirty seconds to several minutes. So `prepare` enqueues a job and answers **202 immediately**;
+a separate worker does the work and the interface polls. Closing the page or reloading loses
+nothing, and a reload rejoins a review already in flight.
+
+The worker is its own container because a background task inside the API dies with a deploy,
+and this work has been paid for. It claims with `FOR UPDATE SKIP LOCKED`, so scaling is a
+replica count. It holds a lease it renews while working; if it dies, the job is **failed, not
+retried** — re-running something that may already have spent an operation would spend another,
+and nothing was applied, so the honest answer is to say it stopped and let a person start
+again. One live review per inspection is enforced by a partial unique index.
+
 ## Where photographs live
 
 Bytes go to a blob store; the database keeps a key. The key **is** the photograph's sha256,
