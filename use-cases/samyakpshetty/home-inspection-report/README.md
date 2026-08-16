@@ -42,6 +42,93 @@ happens.](docs/review-gate.png)
    the system produced. Where the *inspector's own* wording carries a claim, that is reported
    with the phrase named and does not fail the export — their licence, their words.
 
+## How it works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor I as 👤 Inspector
+    participant W as 🖥️ Interface
+    participant A as ⚙️ API
+    participant P as 🗄️ Postgres
+    participant K as 🔧 Worker
+    participant S as 🤖 SuperDocs
+
+    I->>W: walk the property, system by system
+    W->>A: findings, and photographs
+    A->>A: refuse anything over 12 MB unread, then decode, HEIC → JPEG, 2048 px, strip EXIF, sha256
+    A->>P: findings, and photograph bytes into a content-addressed store
+    I->>W: Propose rewrites
+    W->>A: POST …/prepare
+    A->>P: enqueue a job
+    A-->>W: 202 and a job id
+    K->>P: claim one job, FOR UPDATE SKIP LOCKED, holding a renewed lease
+    K->>P: skeleton held for this format hash and this provider?
+    alt not held
+        K->>S: register the format, if the account does not have it
+        K->>S: "Load my '…' template… reproduce it exactly as saved"
+        S-->>K: the format, as saved
+        K->>K: read it back as a format — or fall back to the local copy, and say which
+        K->>P: hold the skeleton against (format hash, provider)
+    end
+    K->>S: upload each photograph, skipping any hash already uploaded
+    K->>K: bind the findings into that skeleton — deterministic
+    K->>S: upload the report as one document
+    K->>S: rewrite every finding note, in review mode
+    S-->>K: one proposed change per note
+    K->>K: language rail — a refusal is pre-decided, never offered as a choice
+    K->>P: record every proposal with its verdict
+    W->>A: poll the job, then read the proposals
+    I->>W: Use the rewrite / Keep my wording, one at a time
+    W->>A: POST …/decisions
+    A->>S: approve — one call, every decision, refusals carrying their reason
+    A->>P: the outcomes, and the approved wording against each finding
+    I->>W: Export
+    A->>S: export, then read the file back to confirm it carries the approvals
+    A->>A: verify the finished bytes — grouping, order, labels, photographs, language
+    A-->>I: the file, and what was found inside it
+```
+
+Two things in that diagram are the whole design.
+
+**Structure is code; prose is the AI; presentation is the format.** *Bind the findings into
+that skeleton* is deterministic; *rewrite every finding note* is not, and the line between them
+is the architecture. Which system a finding belongs under, and in what order it appears, never
+leaves `render/report.py` — so "grouped correctly by system", the one thing the card asks me
+to confirm, is a property of the renderer rather than something to hope for. What the model is
+asked for is the thing it is measurably good at: one narrow rewrite per note. That split was
+tested rather than assumed — the experiment is in [`PROGRESS.md`](./PROGRESS.md).
+
+**The gate is an operation, not a screen.** `prepare` → `decisions` → `export` are three HTTP
+calls, and the interface is one driver of them. A person clicking and a program posting JSON
+go through exactly the same path, and the rail sits behind all of it: a refused rewrite is
+refused server-side, in `pipeline.decide`, whatever a client sends.
+
+### The pieces, and where they are
+
+| | |
+|---|---|
+| `domain/` | the typed model, and the catalogue read from `config/systems.yaml` and `config/severity.yaml` |
+| `templates/registry.py` | registers each format with SuperDocs and asks for it back; validates what returns *is* the format |
+| `templates/binding.py` | reads a format's worked example as the per-finding template, and fills it |
+| `templates/authoring.py`, `wordcraft.py` | generate the three shipped `.docx` formats, so their design is reviewable in a diff |
+| `render/report.py` | binds an inspection into a skeleton. Same input, same bytes |
+| `render/pipeline.py` | `prepare` / `decide` / `export_recovering_session` — the three stages, and the settle-then-read-back on export |
+| `phrasing/rail.py` | the observational-language rail: 12 refusing rules and 16 allow patterns, in `config/language_rail.yaml` |
+| `photos/pipeline.py` | decode, HEIC → JPEG, downscale, strip EXIF, fingerprint |
+| `superdocs/` | one typed protocol (`base.py`), the live client, the deterministic fake, and an offline exporter |
+| `store/` | `db.py`, `blobs.py` (photograph bytes), `jobs.py` (the queue), `migrate.py` (ordered, immutable migrations) |
+| `verify/exports.py` | opens the finished PDF or DOCX and reports what is actually in it |
+| `api/app.py`, `worker.py` | the HTTP surface, and the container that does the slow part |
+| `frontend/` | React and TypeScript; hash routing, `#/i/<id>/walk\|review\|export` |
+
+Not in the diagram, because it is the uncommon path: if the SuperDocs session is gone by the
+time someone exports — a restart, or a report signed off weeks ago — the document is
+re-rendered from our own database and re-uploaded, and the response says `X-Report-Source:
+rebuilt` rather than `session`. Nothing is lost, because every finding, approved rewrite and
+photograph is ours; neither upload nor export costs an operation, which is what makes that the
+cheap answer rather than a clever one.
+
 ## Running it
 
 Everything runs in Docker, so the checks below behave the same on any machine.
