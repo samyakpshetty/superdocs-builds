@@ -63,7 +63,12 @@ banned:
     suggest: 'State the observation, then the recommended next step.'
 
   - id: code_compliance
-    pattern: '\b(up to code|code[- ]compliant|meets code|code compliant|to code|building code)\b'
+    # Matches the claim, not one phrasing of it. The first version listed noun forms in a
+    # single word order — "code compliant", "meets code" — and sailed past "the wiring is
+    # fully compliant with current code", which is the same claim with the words the other
+    # way round. Compliance is an authority's determination however it is worded, so the
+    # rule now recognises the vocabulary rather than the arrangement.
+    pattern: '\b(up to code|code[- ]compliant|meets? (the )?code|to code|building code|complian(t|ce)|complies with|conform(s|ed|ing)? (to|with))\b'
     category: code
     why: >-
       Code compliance is determined by an authority having jurisdiction, not by an

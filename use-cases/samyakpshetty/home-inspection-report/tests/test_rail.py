@@ -162,3 +162,45 @@ def test_every_rule_is_documented() -> None:
     for r in rules:
         assert r["why"], f"rule {r['id']} has no explanation"
         assert r["suggest"], f"rule {r['id']} suggests no alternative"
+
+
+class TestComplianceIsCaughtInAnyWordOrder:
+    """The rule matches the claim, not one arrangement of it.
+
+    The first version listed noun forms in a single order — "code compliant", "meets code" —
+    and let "the wiring is fully compliant with current code" through, which is the same
+    claim with the words reversed. Compliance is an authority's determination however it is
+    phrased.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "the wiring is fully compliant with current code",
+            "the panel is code compliant",
+            "brought up to code in 2011",
+            "the installation complies with the standard",
+            "the flue conforms to the manufacturer instructions",
+            "not compliant with current requirements",
+            "this meets the code",
+        ],
+    )
+    def test_a_compliance_claim_is_refused(self, text: str) -> None:
+        verdict = rail.check(text)
+        assert not verdict.clean, text
+        assert any(b.category == "code" for b in verdict.breaches), verdict.summary()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "safety glazing present at the tub surround",
+            "no leaks were observed at the time of inspection",
+            "warrants evaluation by a licensed electrician",
+            "operated normally when tested at the time of inspection",
+            "downpipe discharging at the foundation",
+            "recommend review by the local authority having jurisdiction",
+        ],
+    )
+    def test_real_inspection_vocabulary_still_passes(self, text: str) -> None:
+        """Refusing valid work is a failure of equal weight to permitting a bad claim."""
+        assert rail.check(text).clean, rail.check(text).summary()
