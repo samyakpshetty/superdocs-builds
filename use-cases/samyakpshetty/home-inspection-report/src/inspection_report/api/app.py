@@ -577,7 +577,8 @@ def _materialised_template(conn: Any, key: str) -> tuple[str, str]:
         )
     # Computed from the local bytes, so a cache hit costs no call at all.
     sha = registry.content_sha(path.read_bytes())
-    cached = db.load_skeleton(conn, sha)
+    provider = _provider()
+    cached = db.load_skeleton(conn, sha, provider)
     if cached is not None:
         return cached, "cache"
 
@@ -596,7 +597,14 @@ def _materialised_template(conn: Any, key: str) -> tuple[str, str]:
 
     if not from_service:
         return html, "local"
-    db.save_skeleton(conn, content_sha=sha, format_key=key, template_name=fmt.name, html=html)
+    db.save_skeleton(
+        conn,
+        content_sha=sha,
+        provider=provider,
+        format_key=key,
+        template_name=fmt.name,
+        html=html,
+    )
     _log.info("template_materialised", extra={"format": key, "sha": sha[:8]})
     return html, "superdocs"
 

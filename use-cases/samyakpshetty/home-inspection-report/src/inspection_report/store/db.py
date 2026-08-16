@@ -701,12 +701,19 @@ def clear_proposals(conn: psycopg.Connection[dict[str, Any]], inspection_id: UUI
     conn.commit()
 
 
-def load_skeleton(conn: psycopg.Connection[dict[str, Any]], content_sha: str) -> str | None:
-    """The skeleton SuperDocs returned for these exact format bytes, if we already have it."""
+def load_skeleton(
+    conn: psycopg.Connection[dict[str, Any]], content_sha: str, provider: str
+) -> str | None:
+    """The skeleton this provider returned for these exact format bytes, if we hold it.
+
+    Keyed by provider as well as by hash: the hash describes the .docx we registered, not the
+    document that came back, so without it a skeleton the offline fake produced would be
+    served to a live run — which is precisely the claim the round trip exists to support.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT html FROM template_skeletons WHERE content_sha = %s",
-            (content_sha,),
+            "SELECT html FROM template_skeletons WHERE content_sha = %s AND provider = %s",
+            (content_sha, provider),
         )
         row = cur.fetchone()
         return str(row["html"]) if row else None
@@ -716,6 +723,7 @@ def save_skeleton(
     conn: psycopg.Connection[dict[str, Any]],
     *,
     content_sha: str,
+    provider: str,
     format_key: str,
     template_name: str,
     html: str,
@@ -727,8 +735,9 @@ def save_skeleton(
     """
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO template_skeletons (content_sha, format_key, template_name, html) "
-            "VALUES (%s, %s, %s, %s) ON CONFLICT (content_sha) DO NOTHING",
-            (content_sha, format_key, template_name, html),
+            "INSERT INTO template_skeletons "
+            "(content_sha, provider, format_key, template_name, html) "
+            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (content_sha, provider) DO NOTHING",
+            (content_sha, provider, format_key, template_name, html),
         )
     conn.commit()

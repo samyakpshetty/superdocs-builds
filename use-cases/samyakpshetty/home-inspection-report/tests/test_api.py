@@ -154,6 +154,32 @@ class TestTheReportIsBuiltOnWhatSuperDocsReturns:
         assert exc.value.status_code == 400
         assert "buyer_summary" in str(exc.value.detail)
 
+    def test_a_skeleton_from_one_provider_is_never_served_to_another(self, client) -> None:  # type: ignore[no-untyped-def]
+        """The cache must not be able to launder a fake document into a live run.
+
+        Keyed on the format's content hash alone, it could: the hash describes the .docx we
+        registered, not the document that came back. A live run would then have reported
+        `cache` and built the report on bytes the offline fake produced — undoing the one
+        thing the round trip is there to establish.
+        """
+        from inspection_report.api import app as appmod
+
+        with db.connect() as conn:
+            _forget_skeletons(conn)
+            _, source = appmod._materialised_template(conn, "buyer_summary")
+            assert source == "superdocs"
+
+            # The same format bytes, asked for by a different provider.
+            assert db.load_skeleton(conn, _sha_of("buyer_summary"), "fake") is not None
+            assert db.load_skeleton(conn, _sha_of("buyer_summary"), "live") is None
+
+
+def _sha_of(key: str) -> str:
+    from inspection_report.api.app import TEMPLATE_DIR
+    from inspection_report.templates import registry
+
+    return registry.content_sha((TEMPLATE_DIR / f"{key}.docx").read_bytes())
+
 
 def _forget_skeletons(conn) -> None:  # type: ignore[no-untyped-def]
     """Start cold. Safe to drop: it is a cache, re-materialised on demand."""
