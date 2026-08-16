@@ -55,20 +55,26 @@ def _inspection_ids(connection) -> set:  # type: ignore[no-untyped-def]
         return {row["id"] for row in cur.fetchall()}
 
 
-def _seeded(connection, *, store=None) -> object:  # type: ignore[no-untyped-def]
+def _seeded(connection, *, store=None, mark: str = "") -> object:  # type: ignore[no-untyped-def]
     """One inspection with a photograph on its first finding.
 
     Registered with the fixture so it is removed afterwards. These tests run against the same
     database the application uses, and leaving rows behind filled the inspector's list with
     173 copies of the sample property — a test that litters the product it is testing.
+
+    ``mark`` makes the photograph's *bytes* unique. Blob keys are content hashes, so a test
+    that asserts a blob was reclaimed must not share its content with anything else in the
+    database — the seeded sample property alone was enough to keep the key referenced and
+    make the reclaim look broken when it was working exactly as designed.
     """
     inspection = sample.sample_inspection()
     inspection.findings = inspection.findings[:2]
     db.save_inspection(connection, inspection)
-    data = sample.sample_photo_data()
     first = inspection.findings[0]
     photo = first.photos[0]
-    cleaned = clean(data[photo.filename], filename=photo.filename)
+    raw = sample.photo_bytes("roof", f"probe {mark or photo.filename}")
+    cleaned = clean(raw, filename=photo.filename)
+    photo.sha256 = cleaned.sha256
     db.save_photo(
         connection,
         finding_id=first.id,
@@ -275,7 +281,7 @@ class TestDeleting:
         from inspection_report.store.blobs import FilesystemBlobStore
 
         store = FilesystemBlobStore(tmp_path)
-        inspection = _seeded(conn, store=store)
+        inspection = _seeded(conn, store=store, mark="test_deleting_a_photograph_reclaims_its_blob")
         assert self._blob_count(tmp_path) == 2  # the photograph and its thumbnail
 
         photo = inspection.findings[0].photos[0]  # type: ignore[attr-defined]
@@ -288,10 +294,14 @@ class TestDeleting:
         from inspection_report.store.blobs import FilesystemBlobStore
 
         store = FilesystemBlobStore(tmp_path)
-        inspection = _seeded(conn, store=store)
+        inspection = _seeded(
+            conn, store=store, mark="test_a_shared_blob_survives_deleting_one_of_its_rows"
+        )
         original = inspection.findings[0].photos[0]  # type: ignore[attr-defined]
-        data = sample.sample_photo_data()[original.filename]
-        cleaned = clean(data, filename=original.filename)
+        raw = sample.photo_bytes(
+            "roof", "probe test_a_shared_blob_survives_deleting_one_of_its_rows"
+        )
+        cleaned = clean(raw, filename=original.filename)
 
         # A second finding photographs the same thing: same bytes, same hash, same blob.
         twin = Photo(
@@ -322,7 +332,9 @@ class TestDeleting:
         from inspection_report.store.blobs import FilesystemBlobStore
 
         store = FilesystemBlobStore(tmp_path)
-        inspection = _seeded(conn, store=store)
+        inspection = _seeded(
+            conn, store=store, mark="test_deleting_a_finding_takes_its_photographs"
+        )
         first = inspection.findings[0]  # type: ignore[attr-defined]
 
         assert db.delete_finding(conn, first.id, store=store)
@@ -335,7 +347,7 @@ class TestDeleting:
         from inspection_report.store.blobs import FilesystemBlobStore
 
         store = FilesystemBlobStore(tmp_path)
-        inspection = _seeded(conn, store=store)
+        inspection = _seeded(conn, store=store, mark="test_deleting_an_inspection_takes_everything")
 
         assert db.delete_inspection(conn, inspection.id, store=store)  # type: ignore[attr-defined]
         assert db.load_inspection(conn, inspection.id) is None  # type: ignore[attr-defined]
