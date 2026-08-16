@@ -36,8 +36,9 @@ happens.](docs/review-gate.png)
    words stand. The report loses polish, never content.
 7. **The export is read back and checked.** Every system present and in catalogue order,
    every finding under its own heading, every severity label intact, every photograph
-   embedded as real image bytes, no capability URL in the text, and the rail still clean in
-   the finished file.
+   embedded as real image bytes, no capability URL in the text, and no certifying sentence
+   the system produced. Where the *inspector's own* wording carries a claim, that is reported
+   with the phrase named and does not fail the export — their licence, their words.
 
 ## Running it
 
@@ -246,8 +247,14 @@ Where the brief or the API was silent, I made a call and recorded it here.
 
 - **Grouped, provably.** The verifier opens the finished PDF and DOCX and checks the
   structure against the catalogue, rather than checking the HTML that was sent.
-- **Never certifies.** The rail runs on every proposal before approval *and* on the exported
-  bytes afterwards.
+- **Never certifies — and says whose words it was.** The rail runs on every proposal before
+  approval *and* over the exported bytes afterwards, but the finished file separates a claim
+  the *system* produced (a failure, because that is the thing this build exists to prevent)
+  from one the *inspector* wrote (reported, never failed, because the gate promised their
+  wording is kept exactly as written). Conflating them was a real bug: an inspector typing
+  "is safe" got their report marked failed one screen after being told it would be kept, and
+  a failure nobody can resolve is one everybody learns to ignore — which is precisely how a
+  generated claim would slide past.
 - **Never silently stale.** Exporting immediately after approving can return the
   **pre-approval** document with a 200 and no warning — I hit this on a live run, where the
   PDF carried the original text and a DOCX of the same session one second later carried the

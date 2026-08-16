@@ -101,7 +101,13 @@ it now also stands as the check on anything the AI touched.
 
 - **The rail governs generated text only, never the inspector's own words.** They are the
   licensed professional and the report is theirs. What this system may not do is put
-  certification language in their name.
+  certification language in their name. **The export verifier has to honour the same
+  distinction**, and originally did not: it ran the rail over the whole finished file, so an
+  inspector who wrote "is safe" got `verified: fail` one screen after the gate told them
+  their wording was kept exactly as written. Attribution fixes it — a phrase traceable to a
+  finding's own observation or recommendation is reported and never fails; anything else got
+  into the document another way, and that is the failure worth having. Conflated, the second
+  hides behind the first.
 - **A refused rewrite leaves the original standing** rather than blocking the report. The
   document loses polish, never content.
 - **Refusing valid work is a failure of equal weight to permitting a bad claim.** A rail that

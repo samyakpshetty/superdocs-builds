@@ -341,3 +341,64 @@ class TestAFinishedReportSurvivesLosingItsSession:
                 settle_s=0.0,
             )
         assert "on fire" in str(exc.value)
+
+
+class TestWhoseWordsTrippedTheRail:
+    """The export separates a claim the system produced from one the inspector wrote.
+
+    Found by using the interface: an inspector typing "valley flashing is safe … will last
+    another 20 years" got a report marked `verified: fail`, one screen after being told their
+    wording is kept exactly as written. Both halves matter — the promise to the inspector,
+    and the fact that a failure nobody can resolve is a failure everybody learns to ignore,
+    which is how a genuinely generated claim would slide past.
+    """
+
+    def _export(self, inspection: object) -> bytes:
+        client = FakeSuperDocsClient()
+        result = pipeline.build(
+            inspection,  # type: ignore[arg-type]
+            format_html(),
+            sample.sample_photo_data(),
+            client,
+            session_id="whose-words",
+            polish=False,
+            settle_s=0.0,
+        )
+        return result.exports["docx"].content
+
+    def test_the_inspectors_own_claim_is_reported_and_does_not_fail_the_export(self) -> None:
+        inspection = sample.sample_inspection()
+        inspection.findings = inspection.findings[:1]
+        inspection.findings[
+            0
+        ].observation = "valley flashing is safe and will last another 20 years"
+        card = verify_exports.verify(
+            data=self._export(inspection),
+            fmt="docx",
+            inspection=inspection,
+            expect_photos=False,
+        )
+        named = {c.name: c for c in card.checks}
+        assert card.passed, card.render()
+        attributed = named["the inspector's own wording carries claims (kept as written)"]
+        assert "is safe" in attributed.detail
+        assert named["no certification language the system produced"].passed
+
+    def test_a_claim_the_inspector_did_not_write_still_fails(self) -> None:
+        """The attribution must not become a hole. A rewrite is not the inspector's words."""
+        inspection = sample.sample_inspection()
+        inspection.findings = inspection.findings[:1]
+        inspection.findings[0].observation = "flashing gap at chimney"
+        # What an approved-but-bad rewrite would put in the document.
+        inspection.findings[
+            0
+        ].plain_language = "The flashing is safe and fully compliant with current standards."
+        card = verify_exports.verify(
+            data=self._export(inspection),
+            fmt="docx",
+            inspection=inspection,
+            expect_photos=False,
+        )
+        named = {c.name: c for c in card.checks}
+        assert not named["no certification language the system produced"].passed
+        assert not card.passed, "a generated claim must still fail the export"

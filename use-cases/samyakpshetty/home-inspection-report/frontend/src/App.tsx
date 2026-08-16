@@ -237,7 +237,7 @@ function NewInspection({
 
   return (
     <form
-      className="card stack"
+      className="panel stack"
       onSubmit={(e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);
@@ -594,7 +594,7 @@ function NewFinding({
 
   return (
     <form
-      className="card stack"
+      className="panel stack"
       onSubmit={(e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);

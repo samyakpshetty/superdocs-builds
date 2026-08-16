@@ -182,13 +182,41 @@ def verify(
         f"{image_count} embedded, {expected_photos} expected",
     )
 
-    # 6. The language rail holds in the finished bytes — not just at the gate.
+    # 6. The language rail holds in the finished bytes — not just at the gate. But *whose*
+    #    words tripped it decides whether this is a failure or a note.
+    #
+    #    The rail governs generated text and never overwrites the inspector: they are the
+    #    licensed professional, the report is theirs, and the gate tells them their wording
+    #    is kept exactly as written. Running the rail over the finished file and failing the
+    #    export when their own sentence says "is safe" contradicts that promise — and does
+    #    something worse than annoy them. It buries the failure that actually matters. A
+    #    system that generated a certifying sentence and an inspector who wrote one are not
+    #    the same event, and if the export routinely fails for the second, nobody will look
+    #    at the first.
+    #
+    #    So the two are separated by attribution: anything traceable to a finding's own
+    #    observation or recommendation is reported and never fails the export; anything else
+    #    got into the document some other way, which is the thing this build exists to
+    #    prevent.
     verdict = rail.check(flat)
-    report.add(
-        "no certification language in the exported file",
-        verdict.clean,
-        verdict.summary() if not verdict.clean else "",
+    inspector_words = " ".join(
+        " ".join(f"{f.observation} {f.recommendation}".split()).lower() for f in inspection.findings
     )
+    theirs = [b for b in verdict.breaches if b.matched.lower() in inspector_words]
+    ours = [b for b in verdict.breaches if b.matched.lower() not in inspector_words]
+    report.add(
+        "no certification language the system produced",
+        not ours,
+        "; ".join(f"{b.matched!r} ({b.category})" for b in ours) if ours else "",
+    )
+    if theirs:
+        # Recorded, never failed. It is a real thing a reader should know about the document
+        # and a real thing the inspector is entitled to have said.
+        report.add(
+            "the inspector's own wording carries claims (kept as written)",
+            True,
+            "; ".join(f"{b.matched!r} ({b.category})" for b in theirs),
+        )
 
     # 7. A capability URL never travels inside a document that gets emailed around.
     report.add(
