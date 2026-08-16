@@ -161,7 +161,38 @@ class FindingIn(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    """Liveness: the process is up and serving.
+
+    Deliberately does not touch the database. This build degrades rather than refusing to
+    boot — the catalogue still answers without one — so a restart loop on a database blip
+    would make an outage worse rather than better.
+    """
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready() -> Response:
+    """Readiness: everything this needs is actually reachable.
+
+    Separate from liveness because they answer different questions, and `/health` answering
+    "ok" while every request 503s is how a green dashboard hides an outage. Anything routing
+    traffic should watch this one.
+    """
+    try:
+        with db.connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    except Exception as exc:
+        _log.warning("not_ready", extra={"error": type(exc).__name__})
+        return Response(
+            status_code=503,
+            media_type="application/json",
+            content=json.dumps({"status": "degraded", "database": "unreachable"}),
+        )
+    return Response(
+        status_code=200,
+        media_type="application/json",
+        content=json.dumps({"status": "ready", "database": "reachable"}),
+    )
 
 
 @app.get("/api/catalogue")

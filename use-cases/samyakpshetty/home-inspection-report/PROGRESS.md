@@ -216,6 +216,39 @@ Kept because the fixes are the interesting part.
   embedded, and the same verifier run over the live-exported bytes.
 - The exported PDF was opened and looked at, not just parsed.
 
+## Is this production ready? No, and these are the five reasons
+
+The domain logic is production-grade: structure is deterministic, the rail is enforced in
+code, the export is verified by reading the finished bytes, photographs are cleaned, and the
+data-loss and concurrency faults found by testing are fixed and covered against a real
+database. What is not ready is the operational shape around it.
+
+1. **`prepare` blocks an HTTP request for as long as the AI takes.** `_poll` waits up to
+   240 seconds inside the request, pinning a database connection. SuperDocs' own guidance
+   says an operation can take "from thirty seconds to several minutes", so this is not a
+   pathological case — it is the normal one. Behind any proxy with a 60-second timeout the
+   client gets a 504 while the operation is still charged. This wants a job row and a polling
+   endpoint, which is a day's work and the single largest gap.
+2. **There are no migrations.** `apply_schema` is `CREATE TABLE IF NOT EXISTS`, so an
+   existing deployment never gets a new column — the table already exists and the statement
+   does nothing. Fine for a fresh clone, unusable for a second release. Wants Alembic.
+3. **Photographs are full-resolution BYTEA in Postgres.** A firm doing five inspections a day
+   with thirty photographs each puts hundreds of gigabytes a year into the database. It works
+   and it is transactional, which is why it was the right call for a build that has to run
+   from one `docker compose up` — but the production shape is object storage with the
+   database holding keys.
+4. **The 8 MB upload cap is below what modern phones produce.** A 48-megapixel photograph
+   routinely exceeds it, and nothing downscales on the way in — only the thumbnail is
+   derived. An inspector would hit this on their own camera. Wants a resize before the cap
+   rather than a rejection at it.
+5. **One firm, one process, no queue.** No multi-tenancy, no background workers, no retry of
+   a failed AI pass beyond the transport-level backoff, and no metrics or alerting beyond
+   structured logs.
+
+None of these are hidden by the interface — `/ready` reports whether the database is actually
+reachable, distinct from `/health`, which stays a liveness check so a database blip does not
+turn into a restart loop.
+
 ## Not built, and why
 
 - **An MCP surface.** The card names the REST API and the brief treats the two as
