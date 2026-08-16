@@ -22,12 +22,13 @@ from html.parser import HTMLParser
 
 @dataclass
 class Run:
-    """A span of text with the emphasis and size it was written with."""
+    """A span of text with the emphasis, size and colour it was written with."""
 
     text: str
     bold: bool = False
     italic: bool = False
     size: float | None = None
+    colour: str | None = None
 
 
 @dataclass
@@ -54,6 +55,14 @@ def _size_in(style: str) -> float | None:
 
     match = re.search(r"font-size:\s*([\d.]+)pt", style)
     return float(match.group(1)) if match else None
+
+
+def _colour_in(style: str) -> str | None:
+    """A run's colour. Carried because in this document colour means severity."""
+    import re
+
+    match = re.search(r"color:\s*#?([0-9a-f]{6})", style)
+    return match.group(1) if match else None
 
 
 def _align_in(style: str) -> str:
@@ -83,6 +92,7 @@ class _Reader(HTMLParser):
         self._bold = 0
         self._italic = 0
         self._sizes: list[float | None] = []
+        self._colours: list[str | None] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in self.BLOCKS:
@@ -94,7 +104,9 @@ class _Reader(HTMLParser):
         elif tag in self.ITALIC:
             self._italic += 1
         elif tag == "span":
-            self._sizes.append(_size_in(_style_of(attrs)))
+            style = _style_of(attrs)
+            self._sizes.append(_size_in(style))
+            self._colours.append(_colour_in(style))
         elif tag == "img":
             a = dict(attrs)
             self.blocks.append(
@@ -111,13 +123,25 @@ class _Reader(HTMLParser):
             self._bold = max(0, self._bold - 1)
         elif tag in self.ITALIC:
             self._italic = max(0, self._italic - 1)
-        elif tag == "span" and self._sizes:
-            self._sizes.pop()
+        elif tag == "span":
+            if self._sizes:
+                self._sizes.pop()
+            if self._colours:
+                self._colours.pop()
 
     def handle_data(self, data: str) -> None:
         if self._open and data.strip():
             size = next((s for s in reversed(self._sizes) if s is not None), None)
-            self._runs.append(Run(data, bold=self._bold > 0, italic=self._italic > 0, size=size))
+            colour = next((c for c in reversed(self._colours) if c is not None), None)
+            self._runs.append(
+                Run(
+                    data,
+                    bold=self._bold > 0,
+                    italic=self._italic > 0,
+                    size=size,
+                    colour=colour,
+                )
+            )
 
     def _flush(self) -> None:
         if self._runs and self._open:
@@ -152,6 +176,13 @@ _HEADING_SIZE = {"h1": 14.5, "h2": 12.5, "h3": 11.5, "h4": 11.0}
 _BODY_SIZE = 10.0
 
 
+def _rgb(colour: str | None) -> tuple[float, float, float]:
+    """A hex colour as the 0-1 triple pymupdf wants. None is the document's ink."""
+    if not colour:
+        return (0.07, 0.07, 0.09)
+    return tuple(int(colour[i : i + 2], 16) / 255 for i in (0, 2, 4))  # type: ignore[return-value]
+
+
 def _font(*, bold: bool, italic: bool) -> str:
     """The base-14 PDF font for one combination of emphasis."""
     if bold and italic:
@@ -179,7 +210,7 @@ def to_docx(html: str, images: ImageResolver) -> bytes:
     """A real Word document, with the photographs embedded as real image parts."""
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.shared import Inches, Pt
+    from docx.shared import Inches, Pt, RGBColor
 
     doc = Document()
     for block in read_blocks(html):
@@ -206,6 +237,8 @@ def to_docx(html: str, images: ImageResolver) -> bytes:
             added.italic = run.italic
             if run.size is not None:
                 added.font.size = Pt(run.size)
+            if run.colour:
+                added.font.color.rgb = RGBColor.from_string(run.colour.upper())
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -253,36 +286,36 @@ def to_pdf(html: str, images: ImageResolver) -> bytes:
         # severity label stays bold in the middle of its line and an 18pt letterhead stays
         # 18pt. Widths are measured rather than guessed at from a character count, which is
         # what makes mixed fonts on one line land correctly.
-        words: list[tuple[str, str, float]] = []
+        words: list[tuple[str, str, float, str | None]] = []
         for run in block.runs:
             font = _font(bold=run.bold or heading, italic=run.italic)
             size = run.size or base
-            words.extend((word, font, size) for word in run.text.split())
+            words.extend((word, font, size, run.colour) for word in run.text.split())
         if not words:
             continue
 
         # Wrapped before anything is drawn, because a centred line cannot be positioned
         # until its full width is known.
-        lines: list[list[tuple[str, str, float]]] = [[]]
+        lines: list[list[tuple[str, str, float, str | None]]] = [[]]
         used = 0.0
-        for word, font, size in words:
+        for word, font, size, colour in words:
             w = fitz.get_text_length(word, fontname=font, fontsize=size)
             space = fitz.get_text_length(" ", fontname=font, fontsize=size)
             if lines[-1] and indent + used + w > right:
                 lines.append([])
                 used = 0.0
-            lines[-1].append((word, font, size))
+            lines[-1].append((word, font, size, colour))
             used += w + space
 
         if heading:
             y += 8  # room above a section, the way the Word formats set it
         for i, line in enumerate(lines):
-            size = max(s for _, _, s in line)
+            size = max(s for _, _, s, _c in line)
             leading = size + 4
             if y + leading > height - margin:
                 new_page()
-            widths = [fitz.get_text_length(w, fontname=f, fontsize=s) for w, f, s in line]
-            spaces = [fitz.get_text_length(" ", fontname=f, fontsize=s) for _, f, s in line]
+            widths = [fitz.get_text_length(w, fontname=f, fontsize=s) for w, f, s, _c in line]
+            spaces = [fitz.get_text_length(" ", fontname=f, fontsize=s) for _, f, s, _c in line]
             total = sum(widths) + sum(spaces[:-1])
             if block.align == "center":
                 x = margin + (right - margin - total) / 2
@@ -292,8 +325,14 @@ def to_pdf(html: str, images: ImageResolver) -> bytes:
                 x = indent
             if block.tag == "li" and i == 0:
                 page.insert_text((margin + 2, y), "•", fontsize=size, fontname="helv")
-            for (word, font, run_size), w, space in zip(line, widths, spaces, strict=True):
-                page.insert_text((x, y), word, fontsize=run_size, fontname=font)
+            for (word, font, run_size, colour), w, space in zip(line, widths, spaces, strict=True):
+                page.insert_text(
+                    (x, y),
+                    word,
+                    fontsize=run_size,
+                    fontname=font,
+                    color=_rgb(colour),
+                )
                 x += w + space
             y += leading
         y += 4 if heading else 2

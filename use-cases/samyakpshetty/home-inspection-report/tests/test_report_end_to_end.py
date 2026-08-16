@@ -196,13 +196,19 @@ class TestDeterminism:
         """The Electrical section holds a safety_concern and a monitor, in that order."""
         inspection = sample.sample_inspection()
         html = report.render(inspection, format_html())
-        # Anchor on the heading, not the name: every system is also named in the
-        # "what was inspected" sentence near the top of the report.
-        start = html.index("<h1>Electrical</h1>")
-        end = html.index("<h1>", start + 1)
-        section = html[start:end]
+
+        # Read the document as blocks rather than matching markup: a heading carries the
+        # format's own runs, so `<h1>Electrical</h1>` is not what the HTML says, and the
+        # finding shape is the firm's to change. Anchor on the heading *text* instead —
+        # every system is also named in the "what was inspected" sentence, so the heading
+        # is the only reliable boundary.
+        blocks = binding.parse_blocks(html)
+        start = next(i for i, b in enumerate(blocks) if b.is_heading and b.text == "Electrical")
+        end = next((i for i in range(start + 1, len(blocks)) if blocks[i].is_heading), len(blocks))
+        section = " ".join(b.text for b in blocks[start:end])
+
         prompt_at = section.find("Recommend prompt evaluation")
-        monitor_at = section.find("Monitor:")
+        monitor_at = section.find("Monitor")
         assert prompt_at >= 0, section[:400]
         assert monitor_at >= 0, section[:400]
         assert prompt_at < monitor_at

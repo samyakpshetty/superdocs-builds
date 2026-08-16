@@ -42,6 +42,16 @@ section from the finished report. So a firm changes the layout of every finding 
 one example in Word. What this build still owns is which system a finding goes under and in
 what order; the format owns everything about how it reads.
 
+**A format is designed, and the design is asserted.** A report is the only thing a buyer,
+an agent or a lender ever sees, so the shipped formats are set rather than typed — rules,
+letterspacing, small-caps labels, severity colour, a numbered footer. Two things were learned
+making that hold. A table cell's *fill* survives the trip through SuperDocs but its *width*
+does not, so the severity swatch arrived as a slab across a third of the page; it is a
+coloured glyph now, because run colour survives every renderer. And small caps on a severity
+label renders it upper-case, which made the export verifier fail to find a label it was
+holding the document to — presentation does not get to break a guarantee, and a test now
+refuses small caps on any string the verifier checks.
+
 **We ship the formats.** The brief's premise is that inspection reports are not formatted for
 someone who has never read one. A builder that asks a firm to upload its existing report and
 binds data into it would faithfully reproduce that problem, and a builder that requires you

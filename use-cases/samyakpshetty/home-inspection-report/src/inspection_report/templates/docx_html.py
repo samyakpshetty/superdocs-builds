@@ -17,6 +17,7 @@ has already been bitten by three times.
 
 from __future__ import annotations
 
+import contextlib
 import html as html_lib
 from pathlib import Path
 from typing import Any
@@ -76,8 +77,64 @@ def _is_bullet(paragraph: Any) -> bool:
     return name.startswith("List Bullet") or name.startswith("List Number")
 
 
+def _table_to_html(table: Any) -> str:
+    """A table, as one block.
+
+    Tables carry the severity legend, and a converter that only walked `doc.paragraphs`
+    silently dropped them — the offline document would have been missing a section the live
+    one has, which is the fake-is-more-forgiving trap pointed the other way.
+    """
+    rows = []
+    for row in table.rows:
+        cells = []
+        for cell in row.cells:
+            inner = "".join(
+                f"<p>{_runs_to_html(p)}</p>" for p in cell.paragraphs if _runs_to_html(p).strip()
+            )
+            style = _cell_style(cell)
+            cells.append(f"<td{style}>{inner}</td>")
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+    return f"<table>{''.join(rows)}</table>"
+
+
+def _cell_style(cell: Any) -> str:
+    """A cell's fill and width, as inline style.
+
+    Both live in the OOXML and neither survives on its own: an exporter reading the HTML has
+    no other source for them. Dropping the width is what turned a 4mm severity swatch into a
+    third of the page — the colour carried and the geometry did not.
+    """
+    from docx.oxml.ns import qn
+
+    properties = cell._tc.tcPr
+    if properties is None:
+        return ""
+
+    style: list[str] = []
+    shade = properties.find(qn("w:shd"))
+    if shade is not None:
+        fill = shade.get(qn("w:fill"))
+        if fill and fill.lower() not in ("auto", "ffffff"):
+            style.append(f"background-color:#{fill}")
+
+    width = properties.find(qn("w:tcW"))
+    if width is not None and width.get(qn("w:type")) == "dxa":
+        with contextlib.suppress(TypeError, ValueError):
+            # dxa is twentieths of a point; 1440 to the inch.
+            style.append(f"width:{int(width.get(qn('w:w'))) / 1440:.2f}in")
+
+    return f' style="{";".join(style)}"' if style else ""
+
+
 def to_html(doc: Any) -> str:
-    """Convert an open Word document to the flat block HTML the service returns."""
+    """Convert an open Word document to the flat block HTML the service returns.
+
+    Walks the body in document order rather than `doc.paragraphs`, so a table appears where
+    it actually sits rather than being dropped.
+    """
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
     blocks: list[str] = []
     bullets: list[str] = []
 
@@ -87,7 +144,14 @@ def to_html(doc: Any) -> str:
             blocks.append(f"<ul>{items}</ul>")
             bullets.clear()
 
-    for paragraph in doc.paragraphs:
+    for child in doc.element.body.iterchildren():
+        if child.tag.endswith("}tbl"):
+            flush()
+            blocks.append(_table_to_html(Table(child, doc)))
+            continue
+        if not child.tag.endswith("}p"):
+            continue
+        paragraph = Paragraph(child, doc)
         inner = _runs_to_html(paragraph)
         if not inner.strip():
             # Word documents carry empty paragraphs for spacing; the service drops them

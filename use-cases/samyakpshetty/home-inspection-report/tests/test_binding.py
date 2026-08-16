@@ -190,3 +190,62 @@ class TestTheConverterMatchesWhatTheServiceReturns:
         html = docx_html.to_html(self._doc())
         assert "<p></p>" not in html
         assert "<p><span></span></p>" not in html
+
+
+class TestTheShippedFormatsAreSetNotTyped:
+    """The design of a format is part of the product, so it is asserted rather than admired.
+
+    A format is the firm's document and the only thing a buyer ever sees. These are the
+    properties that separate a designed report from a typed one, and each has already been
+    lost once: a rule dropped, a swatch that rendered as a slab, a label small-capped into
+    something the verifier could no longer find.
+    """
+
+    def _xml(self, name: str) -> str:
+        import zipfile
+        from pathlib import Path
+
+        with zipfile.ZipFile(Path(f"templates/{name}.docx")) as archive:
+            return archive.read("word/document.xml").decode()
+
+    @pytest.mark.parametrize("name", ["buyer_summary", "full_technical", "repair_priority"])
+    def test_it_carries_rules_and_letterspacing(self, name: str) -> None:
+        xml = self._xml(name)
+        assert xml.count("<w:pBdr>") >= 8, "section rules are what stop this looking typed"
+        assert "<w:smallCaps" in xml, "the small-caps field labels are missing"
+        assert "Georgia" in xml, "the body face did not survive"
+
+    @pytest.mark.parametrize("name", ["buyer_summary", "full_technical", "repair_priority"])
+    def test_every_severity_has_its_own_swatch_colour(self, name: str) -> None:
+        """The only colour in the document, and it has to be the real scale."""
+        xml = self._xml(name)
+        for severity in catalogue.severities():
+            assert severity.colour.lstrip("#").upper() in xml.upper(), severity.key
+
+    @pytest.mark.parametrize("name", ["buyer_summary", "full_technical", "repair_priority"])
+    def test_a_severity_label_is_never_small_capped(self, name: str) -> None:
+        """Presentation must not break a guarantee.
+
+        Small caps renders the label upper-case, and the export verifier reads the finished
+        file back looking for the label exactly as the catalogue spells it. It failed a live
+        export once for precisely this.
+        """
+        import re
+
+        xml = self._xml(name)
+        labels = {s.label for s in catalogue.severities()}
+        for run in re.findall(r"<w:r>(?:(?!</w:r>).)*</w:r>", xml, re.S):
+            text = "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", run, re.S))
+            if text.strip() in labels or text.strip() == "[severity label]":
+                assert "<w:smallCaps" not in run, f"{text.strip()!r} is small-capped"
+
+    @pytest.mark.parametrize("name", ["buyer_summary", "full_technical", "repair_priority"])
+    def test_it_has_a_footer_that_numbers_the_pages(self, name: str) -> None:
+        import zipfile
+        from pathlib import Path
+
+        with zipfile.ZipFile(Path(f"templates/{name}.docx")) as archive:
+            footers = [n for n in archive.namelist() if n.startswith("word/footer")]
+            assert footers, "no footer part"
+            body = archive.read(footers[0]).decode()
+        assert "PAGE" in body and "NUMPAGES" in body

@@ -176,6 +176,16 @@ Three ship, and switching between them is a data change:
 preamble, a section per inspection system and the limitations clause. A firm opens one in
 Word, changes it, and drops it back in.
 
+They are **set, not typed**: a masthead closed by a heavy rule, small-caps letterspaced field
+labels, section headings on their own hairlines, a severity legend where each level carries
+its own colour, and a footer with the property and the page number. That design is generated
+from code rather than committed as an opaque binary, so a change to it is reviewable in a
+pull request and the catalogue stays the single source of the systems and the scale.
+
+Colour in the document is spent on severity and nothing else — the headings are a deep slate,
+a neutral rather than a hue — because the severity is the one thing a buyer has to pick out at
+a glance.
+
 The markers are things a person types, not markup:
 
 ```
