@@ -34,7 +34,8 @@ def conn():  # type: ignore[no-untyped-def]
     try:
         with db.connect():
             pass
-    except Exception as exc:  # noqa: BLE001 - any connection failure means "no database here"
+    except Exception as exc:
+        # Any connection failure means "no database here", so the kind does not matter.
         pytest.skip(f"needs a Postgres ({type(exc).__name__}); try `make test-db`")
     with db.connect() as connection:
         db.apply_schema(connection)
