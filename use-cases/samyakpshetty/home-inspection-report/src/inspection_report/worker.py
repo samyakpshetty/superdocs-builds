@@ -67,7 +67,10 @@ def run_prepare(conn: Any, job: jobs.Job) -> dict[str, Any]:
     if inspection is None:
         raise RuntimeError("the inspection was deleted while this was queued")
 
-    template = api._template_html(inspection.template_key)
+    # From SuperDocs, not from the local file: the report is built on the skeleton the
+    # service returns for the registered format. `source` says which path produced it, and
+    # travels back to the interface rather than being assumed.
+    template, source = api._materialised_template(conn, inspection.template_key)
     result = api._run_prepare(
         conn,
         inspection=inspection,
@@ -76,6 +79,10 @@ def run_prepare(conn: Any, job: jobs.Job) -> dict[str, Any]:
     )
     return {
         "proposals": len(result.proposals),
+        "template_source": source,
+        # Which SuperDocs answered. The fake counts its own operations down from an invented
+        # budget, and without this the interface showed that countdown as the real balance.
+        "provider": api._provider(),
         "ops_charged": result.ops_charged,
         "ops_remaining": result.ops_remaining,
     }

@@ -35,6 +35,7 @@ from inspection_report.logging import get_logger, setup_logging
 from inspection_report.photos.pipeline import MAX_UPLOAD_BYTES, PhotoRejected, clean
 from inspection_report.phrasing import rail
 from inspection_report.store import db, jobs
+from inspection_report.superdocs.base import SuperDocsError
 from inspection_report.templates import docx_html
 
 _log = get_logger("inspection_report.api")
@@ -124,12 +125,18 @@ def _startup() -> None:
 
 
 def get_conn() -> Any:
+    """Hand the request a connection, and relabel *only* the failure this is qualified to name.
+
+    A dependency that yields is also where FastAPI re-raises whatever the endpoint threw, so a
+    catch-all here does not catch database problems — it catches everything, including the
+    request-validation error that should have been a 422. It reported those as "the database
+    is not reachable" while the database was serving every other request, which sends whoever
+    reads it to the wrong system entirely.
+    """
     try:
         with db.connect() as conn:
             yield conn
-    except HTTPException:
-        raise
-    except Exception as exc:
+    except OperationalError as exc:
         raise HTTPException(
             status_code=503,
             detail=(
@@ -455,12 +462,23 @@ def _serialise(inspection: Inspection) -> dict[str, Any]:
 _FAKE: Any = None
 
 
+def _provider() -> str:
+    """Which SuperDocs is behind this — the service, or the fake standing in for it.
+
+    Reported to the interface rather than kept here, because the fake keeps its own
+    operations budget and a countdown from an imaginary 10,000 is indistinguishable on screen
+    from the real balance. A number that cannot be told apart from a true one is worse than
+    no number.
+    """
+    return os.environ.get("PROVIDER", "fake").lower()
+
+
 def _client() -> Any:
     global _FAKE
     from inspection_report.superdocs.fake import FakeSuperDocsClient
     from inspection_report.superdocs.live import LiveSuperDocsClient
 
-    if os.environ.get("PROVIDER", "fake").lower() == "live":
+    if _provider() == "live":
         return LiveSuperDocsClient(api_key=os.environ.get("SUPERDOCS_API_KEY", ""))
     if _FAKE is None:
         _FAKE = FakeSuperDocsClient()
@@ -517,7 +535,7 @@ def _template_html(key: str) -> str:
 
     Formats are Word documents, so this is a conversion rather than a read. It is the
     fallback path: the report is normally built from the document SuperDocs hands back when
-    the registered format is loaded.
+    the registered format is loaded — see ``_materialised_template``.
     """
     path = TEMPLATE_DIR / f"{key}.docx"
     if not path.exists():
@@ -527,6 +545,60 @@ def _template_html(key: str) -> str:
             f"Available: {sorted(p.stem for p in TEMPLATE_DIR.glob('*.docx'))}",
         )
     return docx_html.from_path(path)
+
+
+def _materialised_template(conn: Any, key: str) -> tuple[str, str]:
+    """The skeleton to build on, and — honestly — where it came from.
+
+    The format is registered with SuperDocs and the report is built on the document SuperDocs
+    hands back, not on the local file. That is the round trip the whole design rests on:
+    delete the template from the account and no report can be produced.
+
+    Three paths, and the caller is told which one ran, because "built on the local copy" and
+    "built on what the service returned" are different claims and only one of them is the
+    architecture:
+
+    * ``cache`` — we already have the skeleton for these exact format bytes. Keyed by content
+      hash, so an edited format is a different skeleton rather than a stale one. This is what
+      keeps it at one operation per format version instead of one per report.
+    * ``superdocs`` — asked for and returned on this call, then remembered.
+    * ``local`` — SuperDocs could not be reached. An inspector who has walked a property still
+      gets their report out of the same bytes that were registered. What is not acceptable is
+      pretending the round trip happened, so this is reported rather than swallowed.
+    """
+    from inspection_report.templates import registry
+
+    path = TEMPLATE_DIR / f"{key}.docx"
+    if not path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown report format {key!r}. "
+            f"Available: {sorted(p.stem for p in TEMPLATE_DIR.glob('*.docx'))}",
+        )
+    # Computed from the local bytes, so a cache hit costs no call at all.
+    sha = registry.content_sha(path.read_bytes())
+    cached = db.load_skeleton(conn, sha)
+    if cached is not None:
+        return cached, "cache"
+
+    client = _client()
+    try:
+        fmt = registry.ensure_registered(client, TEMPLATE_DIR)[key]
+        html, from_service = registry.materialise(client, fmt, session_id=f"format-{sha[:8]}")
+    except SuperDocsError as exc:
+        _log.warning(
+            "template_from_local_copy",
+            extra={"format": key, "error": f"{type(exc).__name__}: {str(exc)[:160]}"},
+        )
+        return _template_html(key), "local"
+    finally:
+        _release(client)
+
+    if not from_service:
+        return html, "local"
+    db.save_skeleton(conn, content_sha=sha, format_key=key, template_name=fmt.name, html=html)
+    _log.info("template_materialised", extra={"format": key, "sha": sha[:8]})
+    return html, "superdocs"
 
 
 def _load(conn: Any, inspection_id: UUID) -> Inspection:
@@ -727,7 +799,10 @@ def export_report(inspection_id: UUID, fmt: str = "pdf", conn: Any = Depends(get
     if fmt not in ("pdf", "docx"):
         raise HTTPException(status_code=400, detail="format must be pdf or docx")
     inspection = _load(conn, inspection_id)
-    template = _template_html(inspection.template_key)
+    # The same skeleton the rewrite pass was prepared against — from SuperDocs, cached by the
+    # format's content hash — so the export cannot be built on a different shape than the
+    # review was.
+    template, template_source = _materialised_template(conn, inspection.template_key)
 
     client = _client()
     try:
@@ -748,9 +823,7 @@ def export_report(inspection_id: UUID, fmt: str = "pdf", conn: Any = Depends(get
             fmt=fmt,
             filename=_export_name(inspection),
             expected=approved,
-            settle_s=pipeline.SETTLE_AFTER_APPROVE_S
-            if os.environ.get("PROVIDER", "fake").lower() == "live"
-            else 0.0,
+            settle_s=pipeline.SETTLE_AFTER_APPROVE_S if _provider() == "live" else 0.0,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"SuperDocs: {exc}") from exc
@@ -778,6 +851,11 @@ def export_report(inspection_id: UUID, fmt: str = "pdf", conn: Any = Depends(get
             # from our own record because the session was gone. A caller should never have
             # to guess which, and the verification below applies either way.
             "X-Report-Source": "rebuilt" if rebuilt else "session",
+            # And where the *format* came from: the document SuperDocs returned for the
+            # registered format, the cache of a previous such return, or the local copy
+            # because the service could not be reached. Built on a local copy is a different
+            # claim, and it is made out loud.
+            "X-Report-Template": template_source,
             "X-Report-Checks": json.dumps(
                 [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in card.checks]
             ),
@@ -819,6 +897,7 @@ def _proposals_payload(result: Any) -> dict[str, Any]:
         "photos_reused": result.photos_reused,
         "ops_charged": result.ops_charged,
         "ops_remaining": result.ops_remaining,
+        "provider": _provider(),
         "proposals": [
             {
                 "change_id": p.diff.change_id,

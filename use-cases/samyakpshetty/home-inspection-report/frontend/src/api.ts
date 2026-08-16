@@ -61,7 +61,17 @@ export type JobState = "queued" | "running" | "done" | "failed" | null;
 export type JobStatus = {
   id?: string;
   state: JobState;
-  result?: { proposals: number; ops_charged: number; ops_remaining: number | null } | null;
+  result?: {
+    proposals: number;
+    ops_charged: number;
+    ops_remaining: number | null;
+    // "live" or "fake". The fake keeps its own budget and counts down from an invented
+    // 10,000, which on screen is indistinguishable from the real balance — so the figure is
+    // only ever shown as a balance when it is one.
+    provider?: string;
+    // Where the report's format came from: "superdocs", "cache", or "local".
+    template_source?: string;
+  } | null;
   error?: string | null;
   attempts?: number;
 };

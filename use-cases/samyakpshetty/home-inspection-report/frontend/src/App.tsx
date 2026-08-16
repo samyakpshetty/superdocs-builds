@@ -752,6 +752,10 @@ function Gate({
   const [approvals, setApprovals] = useState<Record<string, boolean>>({});
   const [tier, setTier] = useState("core");
   const [ops, setOps] = useState<number | null>(null);
+  // Which SuperDocs answered, and where the format came from. Both are shown rather than
+  // assumed: a run against the fake must not look like a run against the service.
+  const [provider, setProvider] = useState<string | null>(null);
+  const [templateSource, setTemplateSource] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setError(null);
@@ -784,6 +788,8 @@ function Gate({
             }
             setBusy(null);
             if (job.result?.ops_remaining != null) setOps(job.result.ops_remaining);
+            if (job.result?.provider) setProvider(job.result.provider);
+            if (job.result?.template_source) setTemplateSource(job.result.template_source);
             if (job.state === "failed") {
               setError(job.error ?? "the review did not finish");
               return;
@@ -822,6 +828,10 @@ function Gate({
     api
       .latestJob(id)
       .then((job) => {
+        // Where the last run's format came from, and which SuperDocs answered, survive a
+        // reload: they describe the proposals on screen, which also survived it.
+        if (job.result?.provider) setProvider(job.result.provider);
+        if (job.result?.template_source) setTemplateSource(job.result.template_source);
         if (job.state === "queued" || job.state === "running") {
           setBusy("prepare");
           cancel = watchJob(job.id ?? "");
@@ -876,9 +886,16 @@ function Gate({
             {busy === "prepare" ? "Asking…" : "Propose rewrites"}
           </button>
           {/* `!== null` is not enough for a value that arrives as JSON: an absent field is
-              undefined, which passes that test and then fails on the method call. */}
-          {typeof ops === "number" && (
+              undefined, which passes that test and then fails on the method call.
+
+              Shown as a balance only when it is one. The offline fake counts down from an
+              invented 10,000, and on screen that was indistinguishable from the real
+              SuperDocs balance — a number nobody could tell was made up. */}
+          {typeof ops === "number" && provider === "live" && (
             <span className="hint">{ops.toLocaleString()} operations left</span>
+          )}
+          {provider !== null && provider !== "live" && (
+            <span className="hint">Offline stand-in — no operations charged</span>
           )}
         </div>
         {busy === "prepare" && (
@@ -886,6 +903,17 @@ function Gate({
             Queued. A large report can take a minute or more, and it runs on the server —
             closing this page or reloading is safe, and the review will be here when you come
             back.
+          </p>
+        )}
+        {/* The report is built on the document SuperDocs returns for the registered format.
+            When it cannot be, that is said plainly rather than left to look the same. */}
+        {templateSource !== null && (
+          <p className="hint">
+            {templateSource === "superdocs"
+              ? "Report format loaded from SuperDocs for this run."
+              : templateSource === "cache"
+                ? "Report format from SuperDocs, held for this version of the format."
+                : "SuperDocs could not be reached for the format — this report was built from the local copy."}
           </p>
         )}
       </div>

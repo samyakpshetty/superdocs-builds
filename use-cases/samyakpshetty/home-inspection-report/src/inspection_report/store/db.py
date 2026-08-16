@@ -699,3 +699,36 @@ def clear_proposals(conn: psycopg.Connection[dict[str, Any]], inspection_id: UUI
     with conn.cursor() as cur:
         cur.execute("DELETE FROM proposals WHERE inspection_id = %s", (inspection_id,))
     conn.commit()
+
+
+def load_skeleton(conn: psycopg.Connection[dict[str, Any]], content_sha: str) -> str | None:
+    """The skeleton SuperDocs returned for these exact format bytes, if we already have it."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT html FROM template_skeletons WHERE content_sha = %s",
+            (content_sha,),
+        )
+        row = cur.fetchone()
+        return str(row["html"]) if row else None
+
+
+def save_skeleton(
+    conn: psycopg.Connection[dict[str, Any]],
+    *,
+    content_sha: str,
+    format_key: str,
+    template_name: str,
+    html: str,
+) -> None:
+    """Remember it, so a format costs one operation per version rather than one per report.
+
+    ``DO NOTHING`` rather than an update: two workers can materialise the same format at the
+    same moment, and the row they would write is the same document either way.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO template_skeletons (content_sha, format_key, template_name, html) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (content_sha) DO NOTHING",
+            (content_sha, format_key, template_name, html),
+        )
+    conn.commit()
