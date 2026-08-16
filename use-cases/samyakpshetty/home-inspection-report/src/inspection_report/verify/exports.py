@@ -95,6 +95,20 @@ def images_in_pdf(data: bytes) -> int:
         doc.close()
 
 
+# The verification travels back as an HTTP header, and a header has a ceiling. A long report
+# whose author writes freely could otherwise grow one past it and lose the whole response, so
+# the list is bounded the way the misplaced-findings check already bounds its own.
+_MAX_PHRASES = 6
+
+
+def _phrases(breaches: list[rail.Breach]) -> str:
+    if not breaches:
+        return ""
+    shown = "; ".join(f"{b.matched!r} ({b.category})" for b in breaches[:_MAX_PHRASES])
+    extra = len(breaches) - _MAX_PHRASES
+    return f"{shown} and {extra} more" if extra > 0 else shown
+
+
 def verify(
     *, data: bytes, fmt: str, inspection: Inspection, expect_photos: bool = True
 ) -> VerificationReport:
@@ -207,7 +221,7 @@ def verify(
     report.add(
         "no certification language the system produced",
         not ours,
-        "; ".join(f"{b.matched!r} ({b.category})" for b in ours) if ours else "",
+        _phrases(ours),
     )
     if theirs:
         # Recorded, never failed. It is a real thing a reader should know about the document
@@ -215,7 +229,7 @@ def verify(
         report.add(
             "the inspector's own wording carries claims (kept as written)",
             True,
-            "; ".join(f"{b.matched!r} ({b.category})" for b in theirs),
+            _phrases(theirs),
         )
 
     # 7. A capability URL never travels inside a document that gets emailed around.

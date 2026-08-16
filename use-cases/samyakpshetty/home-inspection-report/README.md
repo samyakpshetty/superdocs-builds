@@ -18,10 +18,10 @@ happens.](docs/review-gate.png)
 
 1. **An inspection is structured data.** A property, an inspector, and findings, each one
    belonging to exactly one inspection system and carrying a severity, notes and photographs.
-2. **Photographs are cleaned before they go anywhere.** Size is checked before the bytes are
-   read, the image is decoded to prove it is an image, and **EXIF is stripped** — a phone
-   photograph of a house carries the house's GPS coordinates, and this report goes to buyers,
-   agents and lenders.
+2. **Photographs are cleaned before they go anywhere.** An oversized body is refused with a
+   413 before it is read at all, the upload is then read in bounded chunks, the image is
+   decoded to prove it is an image, and **EXIF is stripped** — a phone photograph of a house
+   carries the house's GPS coordinates, and this report goes to buyers, agents and lenders.
 3. **The report format is a Word document**, registered with SuperDocs and loaded back from
    it. The firm's letterhead, severity legend, standing preamble and limitations clause are
    theirs, in a file they can open and redesign.
@@ -281,9 +281,10 @@ Where the brief or the API was silent, I made a call and recorded it here.
 - **Idempotent where it costs money.** A photograph's identity is the hash of its cleaned
   bytes, so a crash and re-run re-uploads nothing. A format is registered once per version,
   by content hash.
-- **Untrusted input is treated as such.** Size caps before read, decode-verification rather
-  than trusting an extension, EXIF stripped, everything a person typed escaped before it
-  becomes markup, and rejection messages that never echo file content.
+- **Untrusted input is treated as such.** A body over the ceiling is refused before it is
+  read, the upload is read in bounded chunks, decode-verification rather than trusting an
+  extension, EXIF stripped, every query parameterised, everything a person typed escaped
+  before it becomes markup, and rejection messages that never echo file content.
 - **No secret in code, logs or history.** `.env` is git-ignored; only `.env.example` with
   placeholders is tracked. The API key is held server-side and never reaches the browser,
   which is also why photographs are served from `/api/photos/{id}` rather than by handing the

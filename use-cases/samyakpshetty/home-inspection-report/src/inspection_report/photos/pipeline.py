@@ -2,7 +2,11 @@
 
 Five things happen to every photo, in this order, and the order matters:
 
-1. **Size is checked before the bytes are read.** A cap enforced after loading is not a cap.
+1. **The cap is enforced where it can be.** This module sees bytes that are already in
+   memory, so its own check is the last line rather than the first: the API refuses an
+   oversized body with a 413 before reading it, and reads what is left in bounded chunks. A
+   cap enforced only here would not be a cap — it would decide which error you get after
+   paying the whole cost, which is exactly what this used to do.
 2. **The image is decoded to prove it is an image.** The filename extension is a claim made
    by whoever uploaded the file, and this endpoint accepts uploads.
 3. **EXIF is stripped.** This is the step that is specific to this domain and easy to miss:

@@ -223,9 +223,10 @@ Kept because the fixes are the interesting part.
   would carry it already exists — `SuperDocsClient` is a typed protocol and the API layer is
   thin — but adding a second transport to a build that has one honest consumer would be
   surface for its own sake.
-- **Streaming uploads.** A photograph is size-capped before its bytes are read and then held
-  in memory. Correct for phone photographs under the service's own 10 MB ceiling; it would
-  need to stream before it handled anything larger.
+- **Streaming uploads.** An oversized request is refused before it is read and the rest is
+  read in bounded chunks, but what is accepted is held in memory rather than streamed to
+  storage. Correct for phone photographs under the service's own 10 MB ceiling; anything
+  larger would need a streaming path.
 - **Multi-property scheduling, a job queue, and user accounts beyond a single firm.** One
   firm, one report at a time. The database schema would carry more, but nothing above it
   pretends to.

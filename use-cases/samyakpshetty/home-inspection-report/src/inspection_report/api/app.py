@@ -31,7 +31,7 @@ from inspection_report.domain.models import (
     ReportStage,
 )
 from inspection_report.logging import get_logger, setup_logging
-from inspection_report.photos.pipeline import PhotoRejected, clean
+from inspection_report.photos.pipeline import MAX_UPLOAD_BYTES, PhotoRejected, clean
 from inspection_report.phrasing import rail
 from inspection_report.store import db
 from inspection_report.templates import docx_html
@@ -58,6 +58,41 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# The largest request body this API will consider, multipart overhead included. The photo
+# pipeline's own cap is smaller; this is the outer wall, and it exists because by the time a
+# route function runs, FastAPI has already parsed the multipart body and spooled it to disk.
+# A cap enforced after that is not a cap — it only decides what error you get after paying
+# the cost. This middleware runs before routing, so an oversized body is refused with a 413
+# and never read.
+MAX_REQUEST_BYTES = 12 * 1024 * 1024
+
+
+@app.middleware("http")
+async def _refuse_oversized_bodies(request: Any, call_next: Any) -> Any:
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            length = int(declared)
+        except ValueError:
+            return Response(status_code=400, content="malformed content-length")
+        if length > MAX_REQUEST_BYTES:
+            _log.warning("request_too_large", extra={"declared": length})
+            return Response(
+                status_code=413,
+                media_type="application/json",
+                content=json.dumps(
+                    {
+                        "detail": (
+                            f"the request body is {length // 1024} KB; this API accepts at "
+                            f"most {MAX_REQUEST_BYTES // 1024} KB. A photograph should be "
+                            f"well under that — reduce the camera resolution or crop it."
+                        )
+                    }
+                ),
+            )
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -208,9 +243,13 @@ async def add_photo(
     EXIF is stripped before anything is stored: a phone photograph of a house carries the
     house's coordinates, and this report goes to buyers, agents and lenders.
     """
-    raw = await file.read()
+    name = file.filename or "photo"
     try:
-        photo = clean(raw, filename=file.filename or "photo")
+        # Chunked, and abandoned the moment it goes over. A request with no content-length
+        # slips past the middleware above, so the cap is enforced here too rather than by
+        # measuring a blob that has already been read.
+        raw = await _read_capped(file, MAX_UPLOAD_BYTES, name)
+        photo = clean(raw, filename=name)
     except PhotoRejected as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -338,6 +377,27 @@ def _release(client: Any) -> None:
     """Close a live client; leave the shared fake open for the next request."""
     if client is not _FAKE:
         client.close()
+
+
+async def _read_capped(file: UploadFile, limit: int, filename: str) -> bytes:
+    """Read an upload, refusing it as soon as it exceeds ``limit``.
+
+    The point is to stop at the cap rather than to discover afterwards that it was passed.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(256 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise PhotoRejected(
+                f"{filename} is larger than the {limit // 1024} KB limit. Reduce the camera "
+                f"resolution or crop the image."
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _session_id(inspection_id: UUID) -> str:
