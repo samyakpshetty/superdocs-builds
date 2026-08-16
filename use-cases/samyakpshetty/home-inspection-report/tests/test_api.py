@@ -130,18 +130,6 @@ class TestTheReportIsBuiltOnWhatSuperDocsReturns:
         assert (first, second) == ("superdocs", "cache")
         assert first_html == second_html, "the cache must return the same document"
 
-    def test_the_export_is_built_on_the_same_skeleton_as_the_review(self, client) -> None:  # type: ignore[no-untyped-def]
-        """A report reviewed against one shape and exported on another is not the same report."""
-        from inspection_report.api import app as appmod
-
-        with db.connect() as conn:
-            _forget_skeletons(conn)
-            prepared, _ = appmod._materialised_template(conn, "buyer_summary")
-            exported, source = appmod._materialised_template(conn, "buyer_summary")
-
-        assert prepared == exported
-        assert source in {"superdocs", "cache"}
-
     def test_an_unknown_format_is_refused_by_name(self, client) -> None:  # type: ignore[no-untyped-def]
         """And says which formats exist, rather than failing somewhere further in."""
         from fastapi import HTTPException

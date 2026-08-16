@@ -92,8 +92,13 @@ disallow_untyped_calls = false
 # ----------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --strict-markers"
+# `not live` is deselection, not decoration. The live test's own docstring said it never runs
+# in the keyless suite, and nothing enforced that — it merely skipped itself when no key was
+# present, so the claim held right up until someone ran `make check` from the terminal they
+# had just set up for a live run, at which point the suite quietly spent an operation. Asked
+# for by name (`pytest -m live`) it still runs: a command-line `-m` overrides this one.
+addopts = "-q --strict-markers -m 'not live'"
 markers = [
     "postgres: test requires a live Postgres (run in docker compose, skipped otherwise)",
-    "live: test hits the real SuperDocs API (needs a key; never in the keyless suite)",
+    "live: test hits the real SuperDocs API (needs a key; deselected unless asked for by name)",
 ]

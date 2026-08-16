@@ -247,6 +247,14 @@ Kept because the fixes are the interesting part.
   balance was 9,942 — formatted identically, with nothing saying which SuperDocs had
   answered. A figure nobody can tell is made up is worse than no figure; it is only shown as
   a balance when it is one.
+- **The suite could spend money, and said it could not.** `pytest` never deselected the
+  `live` marker, so the one test that hits the real API ran in the default suite whenever a
+  key happened to be in the environment — which is exactly the case while checking a live run.
+  It skipped itself without a key, so the marker's own description ("never in the keyless
+  suite") read as true for as long as nobody was in a position to disprove it. Measured
+  rather than assumed: `make check` from a live terminal cost one operation, and now costs
+  none. `not live` is in `addopts`, `conftest.py` pins `PROVIDER=fake` and clears the key for
+  everything unmarked, and `pytest -m live` still opts in by name.
 - **The API had no tests at all.** 218 of them, and not one went through a route. Both of the
   bugs above lived in that gap and were found by using the running application, not by reading
   it. `tests/test_api.py` closes it.
