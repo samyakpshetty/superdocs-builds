@@ -81,6 +81,17 @@ Postgres, the API and the browser front end at **http://localhost:5174**. Still 
 `PROVIDER` defaults to the deterministic fake, so a fresh clone gives you a working
 application rather than a login wall.
 
+A fresh database is empty, so there is nothing to look at. This fills it:
+
+```bash
+make seed
+```
+
+The sample property, eight findings across all six systems, eight photographs — written
+through the same pipeline the browser uses, so what you see is what the application really
+stores. `make seed` is repeatable; it replaces the seeded property rather than duplicating
+it.
+
 ```bash
 make check
 ```

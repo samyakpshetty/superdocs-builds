@@ -165,5 +165,57 @@ def formats() -> None:
         click.echo(f"  {path.stem}")
 
 
+@main.command()
+@click.option("--reset", is_flag=True, help="Remove seeded inspections first.")
+def seed(reset: bool) -> None:
+    """Put the sample property into the database, so the interface opens onto real data.
+
+    `docker compose up` otherwise gives you an empty list and a New-inspection button, which
+    is a poor first thirty seconds for anyone opening this to look at it. This writes the
+    same eight findings and eight photographs the demo uses, through the same photo pipeline
+    the browser uses — size-checked, decoded, EXIF stripped — so what you see is what the
+    application actually stores.
+    """
+    from inspection_report.photos.pipeline import clean
+    from inspection_report.store import db
+
+    inspection = sample.sample_inspection()
+    photo_data = sample.sample_photo_data()
+
+    with db.connect() as conn:
+        db.apply_schema(conn)
+        if reset:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM inspections WHERE address_line = %s",
+                    (inspection.property.address_line,),
+                )
+            conn.commit()
+            click.echo(f"  removed existing {inspection.property.address_line!r} inspections")
+
+        db.save_inspection(conn, inspection)
+        stored = 0
+        for finding in inspection.findings:
+            for position, photo in enumerate(finding.photos):
+                raw = photo_data.get(photo.filename)
+                if raw is None:
+                    continue
+                cleaned = clean(raw, filename=photo.filename)
+                db.save_photo(
+                    conn,
+                    finding_id=finding.id,
+                    photo=photo,
+                    data=cleaned.data,
+                    thumbnail=cleaned.thumbnail,
+                    position=position,
+                )
+                stored += 1
+
+    click.echo(
+        f"Seeded {inspection.property.one_line()} — "
+        f"{len(inspection.findings)} findings, {stored} photographs."
+    )
+    click.echo("Open http://localhost:5174 and it is the first row.")
+
 if __name__ == "__main__":
     main()
