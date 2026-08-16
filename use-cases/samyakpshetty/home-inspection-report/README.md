@@ -99,8 +99,13 @@ make check
 ```
 
 ruff + `ruff format --check` + `mypy --strict` + the full test suite + the front end's
-TypeScript: **153 tests, none of which need an API key.** Four of them need a Postgres and
+TypeScript: **229 tests, none of which need an API key.** A further 32 need a Postgres and
 skip without one; `make test-db` runs those against the database `docker compose up` starts.
+
+No test can reach the real service, whatever your shell is set to: the one test that does is
+deselected unless asked for by name (`pytest -m live`), and everything else has `PROVIDER`
+pinned to the fake with the key cleared. Running the suite costs nothing, and that is
+measured rather than assumed.
 
 Other targets: `make verify` re-checks the files already in `exports/`, and
 `docker compose run --rm --no-deps api python -m inspection_report.cli formats` lists the
@@ -115,6 +120,18 @@ Get a key from `use.superdocs.app` → Settings → API Keys, then:
 cp .env.example .env     # set PROVIDER=live and SUPERDOCS_API_KEY=your-key-here
 docker compose run --rm --no-deps -e PROVIDER=live api python -m inspection_report.cli demo
 ```
+
+That is the command-line path. To run the **whole application** against the real service —
+the interface, the worker and the round trip an inspector actually walks through:
+
+```bash
+PROVIDER=live SUPERDOCS_API_KEY=your-key-here docker compose up -d
+```
+
+A report costs about two operations: one to load the registered format, one for the rewrite
+pass. The loaded format is then held against its content hash, so the second report of the
+day pays only for the rewrite. Exports cost nothing. The interface says which of the two it
+used, and says so when it has fallen back to the local copy instead.
 
 The key is read server-side only and never reaches a browser. Choose the precision/speed
 tier with `--model-tier core|turbo|pro|max`; it is a parameter rather than a constant,
