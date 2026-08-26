@@ -81,8 +81,17 @@ def _system_summary(count: int, name: str) -> str:
     return f"{count} items are recorded under {name}, most urgent first."
 
 
-def render(inspection: Inspection, template_html: str) -> str:
-    """Bind an inspection into a report format. Deterministic: same input, same bytes."""
+def render(inspection: Inspection, template_html: str, *, include_photos: bool = True) -> str:
+    """Bind an inspection into a report format. Deterministic: same input, same bytes.
+
+    ``include_photos=False`` renders the same report with the photograph blocks left out.
+    That is not a display option: the rewrite pass is prepared against the photograph-free
+    render because the service behaves differently when images are present. Measured on the
+    live service, same document, same instruction, photographs the only variable: without
+    them all eight marked paragraphs were rewritten; with them none were, and the model
+    edited unmarked boilerplate instead, the "not a certification" notice among it. The
+    photographs go back in for the export, which is what `finalise_document` is for.
+    """
     systems = list(catalogue.systems())
     fmt = binding.read_format(template_html, [s.name for s in systems])
 
@@ -95,7 +104,9 @@ def render(inspection: Inspection, template_html: str) -> str:
         rendered: list[str] = []
         for finding in findings:
             severity = catalogue.severity(finding.severity_key)
-            photos = _photo_rows(finding) if fmt.finding_shape.carries_photos else []
+            photos = (
+                _photo_rows(finding) if include_photos and fmt.finding_shape.carries_photos else []
+            )
             rendered.append(
                 binding.render_finding(
                     fmt.finding_shape,

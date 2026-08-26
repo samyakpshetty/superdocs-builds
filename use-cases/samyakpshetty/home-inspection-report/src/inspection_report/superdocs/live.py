@@ -194,10 +194,15 @@ class LiveSuperDocsClient:
         if options is not None:
             body["options"] = options.model_dump(exclude_none=True)
         resp = self._request("POST", "/v1/documents/export", json=body)
+        # The caller's name wins. Falling back to the session id would name a finished report
+        # after an internal identifier, which is what someone reads off the file they were
+        # handed — and since the export session is keyed by content hash, that identifier is
+        # not even stable across a re-run.
+        stem = (options.filename if options and options.filename else session_id).strip()
         return ExportResult(
             content=resp.content,
             content_type=resp.headers.get("content-type", _DOCX),
-            filename=f"{session_id}.{fmt}",
+            filename=f"{stem}.{fmt}",
         )
 
     # -------------------------------------------------- images and templates

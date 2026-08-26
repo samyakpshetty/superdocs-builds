@@ -14,6 +14,7 @@ The order here carries the guarantees:
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 from inspection_report.domain.models import Inspection, ReportStage
@@ -151,7 +152,11 @@ def prepare(
     """
     uploaded, reused = upload_photos(inspection, photo_data, client, known=known_uploads)
 
-    html = render_report.render(inspection, template_html)
+    # The photographs are uploaded first, because the export needs them — but the document
+    # the rewrite pass sees is rendered without them. See `render_report.render`: images in
+    # the document make the service skip the very paragraphs it is asked to rewrite.
+    # `finalise_document` puts them back before the export.
+    html = render_report.render(inspection, template_html, include_photos=False)
     upload = client.upload_document(document_html=html, session_id=session_id)
     inspection.stage = ReportStage.PREPARED
     result = PipelineResult(
@@ -274,10 +279,11 @@ def build(
 
     name = _slug(inspection)
     expected = [_text_of(p.diff.new_html)[:60] for p in result.proposals if p.approved]
+    export_session = finalise_document(client, inspection, template_html, session_id=session_id)
     for fmt in formats:
         result.exports[fmt] = _export_when_current(
             client,
-            session_id=session_id,
+            session_id=export_session,
             fmt=fmt,
             filename=name,
             expected=expected,
@@ -285,6 +291,41 @@ def build(
         )
     inspection.stage = ReportStage.EXPORTED
     return result
+
+
+def finalise_document(
+    client: SuperDocsClient,
+    inspection: Inspection,
+    template_html: str,
+    *,
+    session_id: str,
+) -> str:
+    """Put the reviewed report — photographs included — where it can be exported from.
+
+    Returns the session the export must be taken from.
+
+    The rewrite pass ran against a photograph-free document, so the reviewed session holds
+    the approved wording and no pictures. This renders the whole report again from our own
+    record: `Finding.prose()` returns the approved rewrite where there is one and the
+    inspector's own words where there is not, so nothing is lost and nothing is invented.
+
+    It goes to a *new* session rather than back into the reviewed one, and that is not
+    tidiness. Measured on the live service, 26 Aug 2026, with the same finished HTML: uploaded
+    into the session that had already been through chat and approve, the export came back at
+    90,628 bytes with every photograph silently gone; uploaded into a fresh session it came
+    back at 162,697 bytes with all eight embedded. A second upload into a used session does
+    not replace what the export reads.
+
+    The session name is keyed to the content, so exporting the same finished report twice
+    re-uses one session and uploading it again is a no-op rather than a second document.
+    Uploads and exports cost no operation, which is what makes re-rendering the cheap answer
+    rather than a clever one.
+    """
+    html = render_report.render(inspection, template_html)
+    digest = hashlib.sha256(html.encode("utf-8")).hexdigest()[:12]
+    export_session = f"{session_id}-final-{digest}"
+    client.upload_document(document_html=html, session_id=export_session)
+    return export_session
 
 
 def export_recovering_session(

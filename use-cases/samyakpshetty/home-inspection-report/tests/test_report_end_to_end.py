@@ -457,3 +457,89 @@ class TestTheEvidenceCannotGoMissingQuietly:
             expect_photos=binding.carries_photos(template, SYSTEM_NAMES),
         )
         assert card.passed, card.render()
+
+
+class TestTheRewritePassNeverSeesPhotographs:
+    """The review runs on a photograph-free document, and the photographs go back for export.
+
+    Measured against the live service on 26 Aug 2026: the same report, the same instruction,
+    photographs the only variable. Without them, all eight paragraphs marked `finding-note`
+    were rewritten. With them, none were — the service proposed twenty edits, every one of
+    them to unmarked boilerplate, including the notice that says the report is not a
+    certification. The fake cannot show this, because it filters proposals to marked
+    paragraphs itself, which is exactly why these assertions are about the *document* rather
+    than about the fake's behaviour.
+    """
+
+    def _prepared(self) -> tuple[FakeSuperDocsClient, object]:
+        inspection = sample.sample_inspection()
+        client = FakeSuperDocsClient()
+        pipeline.prepare(
+            inspection,
+            format_html(),
+            sample.sample_photo_data(),
+            client,
+            session_id="review-session",
+        )
+        return client, inspection
+
+    def test_the_document_sent_for_review_carries_no_photographs(self) -> None:
+        client, _ = self._prepared()
+        assert "<img" not in client.sessions["review-session"].html
+
+    def test_the_findings_are_all_still_there_to_be_reviewed(self) -> None:
+        client, inspection = self._prepared()
+        html = client.sessions["review-session"].html
+        assert html.count(binding.NOTE_CLASS) == len(inspection.findings)  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _final_html(client: FakeSuperDocsClient, session_id: str) -> str:
+        """The document the export is actually taken from, not the one that was reviewed."""
+        finals = [k for k in client.sessions if k.startswith(f"{session_id}-final-")]
+        assert len(finals) == 1, f"expected one finished document, found {finals}"
+        return client.sessions[finals[0]].html
+
+    def test_the_photographs_are_back_in_the_document_that_gets_exported(self) -> None:
+        inspection = sample.sample_inspection()
+        client = FakeSuperDocsClient()
+        pipeline.build(
+            inspection,
+            format_html(),
+            sample.sample_photo_data(),
+            client,
+            session_id="export-session",
+            settle_s=0.0,
+        )
+        embedded = self._final_html(client, "export-session").count("<img")
+        assert embedded == inspection.photo_count()
+
+    def test_the_exported_document_carries_the_approved_wording(self) -> None:
+        inspection = sample.sample_inspection()
+        client = FakeSuperDocsClient()
+        pipeline.build(
+            inspection,
+            format_html(),
+            sample.sample_photo_data(),
+            client,
+            session_id="wording-session",
+            settle_s=0.0,
+        )
+        approved = [f for f in inspection.findings if f.plain_language]
+        assert approved, "the sample is chosen so some rewrites are approved"
+        html = self._final_html(client, "wording-session")
+        for finding in approved:
+            assert report.escape(finding.plain_language) in html
+
+    def test_dropping_the_photographs_changes_nothing_else(self) -> None:
+        """Only the pictures come out. Every word the reviewer reads is the same."""
+        inspection = sample.sample_inspection()
+        # Photographs only render once they have been uploaded and carry a URL.
+        pipeline.upload_photos(
+            inspection, sample.sample_photo_data(), FakeSuperDocsClient(), known=None
+        )
+        tpl = format_html()
+        with_photos = report.render(inspection, tpl)
+        without = report.render(inspection, tpl, include_photos=False)
+        assert "<img" in with_photos and "<img" not in without
+        for finding in inspection.findings:
+            assert report.escape(finding.prose()) in without

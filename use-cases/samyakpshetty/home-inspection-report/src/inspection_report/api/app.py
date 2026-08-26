@@ -823,11 +823,17 @@ def export_report(inspection_id: UUID, fmt: str = "pdf", conn: Any = Depends(get
         # finished report stays exportable across a restart. The flag says which path it
         # took; it is reported rather than swallowed.
         _with_image_lookup(client, conn)
+        # The review ran against a photograph-free document (see `render_report.render`), so
+        # the photographs and the approved wording go into the session together, here, before
+        # anything is exported.
+        export_session = pipeline.finalise_document(
+            client, inspection, template, session_id=_session_id(inspection_id)
+        )
         export, rebuilt = pipeline.export_recovering_session(
             client,
             inspection,
             template,
-            session_id=_session_id(inspection_id),
+            session_id=export_session,
             fmt=fmt,
             filename=_export_name(inspection),
             expected=approved,
