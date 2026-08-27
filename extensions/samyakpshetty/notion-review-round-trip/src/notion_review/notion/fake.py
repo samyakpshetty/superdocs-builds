@@ -112,6 +112,14 @@ class FakeNotionClient:
         block.rich_text = list(rich_text)
         return self._snapshot(block_id)
 
+    def update_table_row(self, block_id: str, *, cells: list[str]) -> Block:
+        block = self._blocks.get(block_id)
+        if block is None:
+            raise NotionNotFoundError(f"block not found: {block_id}")
+        # Stored the way the live client reports them: one list of runs per cell.
+        block.meta["cells"] = [[text] for text in cells]
+        return self._snapshot(block_id)
+
     def create_comment(
         self,
         *,

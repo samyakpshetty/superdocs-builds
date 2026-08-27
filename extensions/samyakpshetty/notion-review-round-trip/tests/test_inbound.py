@@ -36,7 +36,7 @@ from notion_review.docx_markup import parse_docx
 from notion_review.domain import ChangeSource, ProposalStatus, RoundStatus
 from notion_review.notion import FakeNotionClient
 from notion_review.notion.html import blocks_to_html
-from notion_review.notion.models import Annotations, RichText, plain_text
+from notion_review.notion.models import Annotations, RichText, plain_text, row_cells
 from notion_review.notion.tree import fetch_block_tree
 from notion_review.roundtrip import (
     InboundController,
@@ -703,3 +703,50 @@ def test_a_jobs_decisions_are_relayed_once_all_of_them_are_in() -> None:
 
     assert all(p.relayed for p in final.proposals if p.change_id)
     assert final.status == RoundStatus.COMPLETED
+
+
+def test_a_reviewers_edit_to_a_table_cell_lands_on_that_cell_and_no_other() -> None:
+    """A table row is one Notion block but several cells, and Word gives each its own paragraph.
+
+    The whole point of this build is that the structure survives the round trip, so an edit a
+    reviewer makes inside a table cell has to reach that cell — and leave every other cell as it
+    was. Three separate things had to be true for that: the row needs its own chunk (one
+    ``<table>`` per row, not one table of rows), the returned cell paragraph has to match its
+    column, and the write-back has to speak ``cells`` rather than ``rich_text``, because a row
+    carries no rich text of its own.
+    """
+    from _docx_fixtures import build_docx
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    notion, page_id = FakeNotionClient.build_sample()
+    superdocs = FakeSuperDocsClient()
+    store = SQLiteStore()
+    _outbound(notion, page_id, superdocs, store)
+    round_id = store.list_ids()[0]
+    controller = InboundController(
+        notion=notion, superdocs=superdocs, store=store, config=Config.from_env({})
+    )
+
+    # The reviewer retypes one price cell in Word; the row's other cell is untouched.
+    doc = (
+        f'<?xml version="1.0"?><w:document xmlns:w="{W}"><w:body><w:tbl><w:tr>'
+        f"<w:tc><w:p><w:r><w:t>Pro</w:t></w:r></w:p></w:tc>"
+        f"<w:tc><w:p>"
+        f'<w:del w:id="1" w:author="Dana Reviewer" w:date="2026-08-27T10:00:00Z">'
+        f"<w:r><w:delText>$99/mo</w:delText></w:r></w:del>"
+        f'<w:ins w:id="2" w:author="Dana Reviewer" w:date="2026-08-27T10:00:00Z">'
+        f"<w:r><w:t>$129/mo</w:t></w:r></w:ins>"
+        f"</w:p></w:tc></w:tr></w:tbl></w:body></w:document>"
+    )
+    gate = controller.start(round_id=round_id, docx_bytes=build_docx(doc))
+    assert len(gate.pending) == 1, "the cell edit was not matched to its row"
+    proposal = gate.pending[0]
+    assert proposal.block_type == "table_row"
+    assert proposal.cell_index == 1  # the price column, not the plan column
+
+    final = controller.submit(
+        round_id=round_id, decisions=[{"proposal_id": proposal.id, "approved": True}]
+    )
+    assert final.status == RoundStatus.COMPLETED
+    row = notion.retrieve_block(proposal.notion_block_id)
+    assert row_cells(row) == ["Pro", "$129/mo"]  # the edited cell changed; its neighbour did not

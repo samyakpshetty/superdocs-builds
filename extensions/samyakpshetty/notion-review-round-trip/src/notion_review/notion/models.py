@@ -131,6 +131,25 @@ def plain_text(text: str) -> list[RichText]:
     return [RichText(text=text)]
 
 
+def row_cells(block: Block) -> list[str]:
+    """A table row's cell texts, in column order.
+
+    A ``table_row`` carries no ``rich_text``; its content lives under ``meta["cells"]`` as a
+    list of runs per cell. ``Block.plain()`` is therefore empty for a row, which is why the
+    write-back path reads cells rather than plain text.
+    """
+    cells = block.meta.get("cells")
+    if not isinstance(cells, list):
+        return []
+    out: list[str] = []
+    for cell in cells:
+        if isinstance(cell, list):
+            out.append("".join(str(part) for part in cell))
+        else:
+            out.append(str(cell))
+    return out
+
+
 # Notion rejects any single rich-text object whose content exceeds 2000 characters.
 NOTION_RICH_TEXT_LIMIT = 2000
 

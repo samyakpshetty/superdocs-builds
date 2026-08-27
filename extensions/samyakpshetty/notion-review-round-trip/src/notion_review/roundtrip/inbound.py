@@ -28,7 +28,7 @@ from notion_review.domain import (
 )
 from notion_review.logging import get_logger
 from notion_review.notion.base import NotionClient, NotionError
-from notion_review.notion.models import RichText, plain_text, splice_plain_edit
+from notion_review.notion.models import RichText, plain_text, row_cells, splice_plain_edit
 from notion_review.superdocs.base import SuperDocsClient, SuperDocsError
 from notion_review.superdocs.instructions import (
     EditSpec,
@@ -95,6 +95,7 @@ class MatchedEdit(BaseModel):
     reviewer: str
     is_text_change: bool
     comment: str = ""
+    cell_index: int | None = None  # table rows: which column the reviewer edited
 
 
 def match_edits(
@@ -115,6 +116,15 @@ def match_edits(
     for entry in block_map:
         entries_by_text.setdefault(_norm(entry.original_text), []).append(entry)
 
+    # A table row is one block, but Word renders each cell as its own paragraph, so a reviewer
+    # who edits a cell produces a paragraph whose text is that cell alone and matches no row.
+    # Index the cells too, remembering which column each one is, and fall back to this when a
+    # paragraph matches no whole block.
+    cells_by_text: dict[str, list[tuple[BlockMapEntry, int]]] = {}
+    for entry in block_map:
+        for column, cell in enumerate(entry.cells):
+            cells_by_text.setdefault(_norm(cell), []).append((entry, column))
+
     # Occurrence ordinal of every paragraph among all same-text paragraphs, in document order.
     # Counting over *all* paragraphs (not just changed ones) is what lets an edit to the second
     # of two identical blocks resolve to the second block rather than the first.
@@ -130,10 +140,15 @@ def match_edits(
     for para in markup.changes():
         entries = entries_by_text.get(_norm(para.original_text), [])
         ordinal = occurrence[para.index]
-        if ordinal >= len(entries):
-            unmatched.append(para.original_text)  # unlocatable or ambiguous — surfaced, not guessed
-            continue
-        hit = entries[ordinal]
+        cell_index: int | None = None
+        if ordinal < len(entries):
+            hit = entries[ordinal]
+        else:
+            cell_hits = cells_by_text.get(_norm(para.original_text), [])
+            if ordinal >= len(cell_hits):
+                unmatched.append(para.original_text)  # unlocatable — surfaced, never guessed
+                continue
+            hit, cell_index = cell_hits[ordinal]
         reviewer = _reviewer_of(para.authors, para.comments)
         matched.append(
             MatchedEdit(
@@ -146,6 +161,7 @@ def match_edits(
                 reviewer=reviewer,
                 is_text_change=para.is_text_change,
                 comment=" ".join(c.text for c in para.comments),
+                cell_index=cell_index,
             )
         )
     return matched, unmatched
@@ -223,6 +239,7 @@ def propose_changes(
                 notion_block_id=edit.notion_block_id,
                 notion_page_id=edit.notion_page_id,
                 block_type=edit.block_type,
+                cell_index=edit.cell_index,
                 job_id=job_id,
                 operation=ChangeOperation.REPLACE,
                 old_html=f"<p>{escape(edit.original_text)}</p>",
@@ -597,7 +614,13 @@ def _apply_one(
             # silently discard that newer edit. Surface the conflict instead — never clobber.
             as_sent = plain_text_from_html(proposal.old_html)
             current = notion.retrieve_block(proposal.notion_block_id)
-            if _norm(current.plain()) != _norm(as_sent):
+            # A table row holds no rich text of its own — its content is `cells` — so the same
+            # read, compare, write, read-back has to speak that shape. Everything else about
+            # the guarantee is identical: drift is surfaced, never clobbered, and the write is
+            # confirmed by reading the block back.
+            column = proposal.cell_index if proposal.block_type == "table_row" else None
+            before = current.plain() if column is None else row_cells(current)[column]
+            if _norm(before) != _norm(as_sent):
                 proposal.status = ProposalStatus.CONFLICT
                 proposal.error = "block changed in Notion since review; not overwritten"
                 _log.warning(
@@ -605,15 +628,22 @@ def _apply_one(
                     extra={"round_id": round_.id, "proposal_id": proposal.id},
                 )
                 return
-            # Surgical write-back: keep the block's untouched runs (bold, links, colour) exactly as
-            # they were, rewriting only the span the reviewer actually changed.
-            notion.update_block(
-                proposal.notion_block_id,
-                block_type=proposal.block_type,
-                rich_text=splice_plain_edit(current.rich_text, new_text),
-            )
+            if column is not None:
+                # Only the edited column is rewritten; every other cell goes back as it was.
+                cells = row_cells(current)
+                cells[column] = new_text
+                notion.update_table_row(proposal.notion_block_id, cells=cells)
+            else:
+                # Surgical write-back: keep the block's untouched runs (bold, links, colour)
+                # exactly as they were, rewriting only the span the reviewer actually changed.
+                notion.update_block(
+                    proposal.notion_block_id,
+                    block_type=proposal.block_type,
+                    rich_text=splice_plain_edit(current.rich_text, new_text),
+                )
             landed = notion.retrieve_block(proposal.notion_block_id)
-            if _norm(landed.plain()) != _norm(new_text):
+            after = landed.plain() if column is None else row_cells(landed)[column]
+            if _norm(after) != _norm(new_text):
                 proposal.status = ProposalStatus.FAILED
                 proposal.error = "read-back mismatch: block did not reflect the change"
                 return

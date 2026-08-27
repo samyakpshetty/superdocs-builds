@@ -25,9 +25,22 @@ def test_sample_page_renders_structure_and_maps_every_editable_block() -> None:
 
     # Structure preserved with the right containers.
     assert "<h1 " in html
-    assert "<details " in html and "<summary " in html  # toggle
+    assert "<details " in html and "<summary>" in html  # toggle
     assert '<aside class="callout"' in html
     assert "<table " in html and "<tr " in html
+
+    # The toggle's title is a <p> inside the <summary>, not the <summary> itself: a bare
+    # <summary> is dropped on upload, so its text would reach no chunk and a reviewer's edit
+    # to a toggle title would have nowhere to land.
+    assert "<summary><p " in html
+
+    # One <table> per row. A multi-row table is re-chunked as a single unit upstream, so every
+    # row would share one chunk and an edit to one cell would rewrite the whole table.
+    assert html.count("<table ") == sum(1 for e in block_map if e.block_type == "table_row")
+
+    # Cells are separated by a space, because chunks are matched back by text and
+    # `<td>a</td><td>b</td>` reads as "ab" once the tags are stripped.
+    assert "</td> <td>" in html
 
     # One map entry per editable block: heading, paragraph, toggle summary, toggle child,
     # callout, and two table rows.

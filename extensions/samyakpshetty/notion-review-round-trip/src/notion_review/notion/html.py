@@ -95,9 +95,15 @@ def _render(block: Block, block_map: list[BlockMapEntry]) -> str:
             "pre", block, escape(block.plain()), block_map, extra=f' data-nr-language="{lang}"'
         )
     if t == "toggle":
-        summary = _leaf("summary", block, inner, block_map)
+        # The title is a <p> *inside* the <summary>, not the <summary> itself. Measured on the
+        # live service, 27 Aug 2026: a bare <summary> is dropped on upload — its text reaches
+        # no chunk at all, so a reviewer's edit to a toggle title had nowhere to land. Wrapped
+        # in a <p> it chunks like any other paragraph and round-trips. This was our HTML, not
+        # their parser.
+        title = _leaf("p", block, inner, block_map)
         return (
-            f'<details data-nr-type="toggle">{summary}{_children_html(block, block_map)}</details>'
+            f'<details data-nr-type="toggle"><summary>{title}</summary>'
+            f"{_children_html(block, block_map)}</details>"
         )
     if t == "callout":
         icon = escape(str(block.meta.get("icon", "")), quote=True)
@@ -106,8 +112,12 @@ def _render(block: Block, block_map: list[BlockMapEntry]) -> str:
         wrap = f'<aside class="callout" data-nr-icon="{icon}" data-nr-color="{color}">'
         return f"{wrap}{body}{_children_html(block, block_map)}</aside>"
     if t == "table":
-        rows = "".join(_render_row(row, block_map) for row in block.children)
-        return f'<table data-nr-type="table">{rows}</table>'
+        # One <table> per row, deliberately, rather than one table holding every row. Measured
+        # on the live service: a multi-row table is re-chunked as a single unit, so all four
+        # rows of a pricing table shared one chunk id and no individual row could be addressed
+        # — an approved edit to one cell would have rewritten the whole table. One row per
+        # table gives each row its own chunk. It still reads as a table for the reviewer.
+        return "".join(_render_row(row, block_map) for row in block.children)
     if t == "child_database":
         title = escape(str(block.meta.get("title", "Inline database")))
         # Preserved, not editable as text — no map entry, so it can never be changed by a review.
@@ -138,14 +148,22 @@ def _render_row(row: Block, block_map: list[BlockMapEntry]) -> str:
             value = "".join(str(part) for part in cell) if isinstance(cell, list) else str(cell)
             texts.append(value)
             tds.append(f"<td>{escape(value)}</td>")
-    element = f'<tr data-nr-id="{row.id}" data-nr-type="table_row">{"".join(tds)}</tr>'
+    # The single space between cells is load-bearing: chunks are matched back by text, and
+    # `<td>a</td><td>b</td>` reads as "ab" once the tags are gone, which matches nothing.
+    # A space between the cells survives the upload and reads as "a b". Measured.
+    element = (
+        f'<table data-nr-type="table">'
+        f'<tr data-nr-id="{row.id}" data-nr-type="table_row">{" ".join(tds)}</tr>'
+        f"</table>"
+    )
     block_map.append(
         BlockMapEntry(
             notion_block_id=row.id,
             block_type="table_row",
             anchor=row.id,
             original_html=element,
-            original_text=" | ".join(texts),
+            original_text=" ".join(texts),
+            cells=list(texts),
         )
     )
     return element

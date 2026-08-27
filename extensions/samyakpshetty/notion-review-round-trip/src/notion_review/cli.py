@@ -19,6 +19,7 @@ from notion_review.docx_markup.stamp import identify_round, stamp_round_id
 from notion_review.domain import ChangeSource, ProposalStatus, ProposedChange, ReviewRound
 from notion_review.logging import setup_logging
 from notion_review.notion.base import NotionClient
+from notion_review.notion.models import row_cells
 from notion_review.notion.queue_schema import summarize
 from notion_review.roundtrip import (
     InboundController,
@@ -482,7 +483,11 @@ def _print_outcome(proposals: list[ProposedChange], notion: NotionClient) -> Non
             ProposalStatus.FAILED: "! failed",
         }.get(proposal.status, proposal.status.value)
         block = notion.retrieve_block(proposal.notion_block_id)
-        click.echo(f"   {icon}: {proposal.reviewer_name} → “{block.plain()[:60]}”")
+        # A table row has no rich text of its own, so `plain()` is empty for one and the line
+        # would read as though nothing had been written. Show the row's cells instead.
+        cells = row_cells(block)
+        shown = " | ".join(cells) if cells else block.plain()
+        click.echo(f"   {icon}: {proposal.reviewer_name} → “{shown[:60]}”")
 
 
 def _text(html: str) -> str:

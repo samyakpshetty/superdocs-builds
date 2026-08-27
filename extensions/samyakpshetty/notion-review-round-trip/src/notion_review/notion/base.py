@@ -47,6 +47,10 @@ class NotionClient(Protocol):
         """Replace one block's rich text in place. Only changed blocks are ever passed here."""
         ...
 
+    def update_table_row(self, block_id: str, *, cells: list[str]) -> Block:
+        """Replace one table row's cells. A row has no rich text, so it needs its own call."""
+        ...
+
     def create_comment(
         self,
         *,

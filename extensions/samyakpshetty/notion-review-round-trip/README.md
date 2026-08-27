@@ -95,9 +95,9 @@ to the four calls, and an MCP surface over the same controller would be a small 
   **Back**: that `.docx` with tracked changes (`w:ins`, `w:del`, `w:moveFrom`/`w:moveTo`, including
   revisions nested inside hyperlinks) and comments, from any Word-compatible editor.
 - **Structures preserved across the round-trip**: headings, paragraphs, quotes, bulleted and
-  numbered lists, to-dos, code blocks, callouts, tables, inline databases, and rich text (bold,
-  italic, links, colour). A toggle's *contents* make the round-trip; its title does not, because
-  SuperDocs drops the summary on upload (see Limitations).
+  numbered lists, to-dos, code blocks, callouts, toggle titles and their contents, table cells,
+  inline databases, and rich text (bold, italic, links, colour). Verified live against a page
+  carrying one of every block type: **14 blocks out, 14 mapped, 14 back**.
 - **Domain**: any prose document a team keeps in Notion and sends for formal review — a PRD, a
   launch plan, a policy, a client deliverable, a contract summary.
 - A second run means a different Notion page and different reviewer markup within that shape.
@@ -265,9 +265,13 @@ claim by cloning the repository fresh, with no `.env`.
 - **Two reviewers editing the same paragraph in one file** are merged by Word into a single
   resulting text, which I attribute to the first author. The text is right; the attribution is
   lossy. Separate copies, one per reviewer, keep attribution exact.
-- **Table cells can't be targeted individually**, and a **toggle's title doesn't round-trip** —
-  SuperDocs re-chunks a table as one unit and drops a toggle's summary text on upload. Both are
-  surfaced rather than guessed at, and both are reported as bugs.
+- **Table cells and toggle titles used to be excluded here, and that was our bug, not the
+  service's.** A bare `<summary>` is dropped on upload, so a toggle title reached no chunk; a
+  multi-row `<table>` is re-chunked as one unit, so no single row could be addressed; and the
+  write-back sent `rich_text`, which a table row does not have. All three are fixed: the title
+  goes inside a `<p>` within the `<summary>`, each row is its own one-row `<table>`, and a row
+  is written by `cells`, one column at a time. Recorded because the first two were originally
+  written up as upstream limitations when the evidence only ever supported "our HTML".
 - **Decisions apply within one poll interval** (fifteen seconds by default), not instantly.
 - **No notifications** — the page is commented and updated, but nobody is emailed.
 

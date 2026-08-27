@@ -74,6 +74,10 @@ class BlockMapEntry(BaseModel):
     chunk_id: str | None = None  # SuperDocs data-chunk-id, filled after upload
     original_html: str = ""
     original_text: str = ""
+    # Table rows only: the cell texts, in column order. A row is one chunk and one Notion
+    # block, but Word gives each cell its own paragraph, so a reviewer edits a *cell*. Keeping
+    # the cells here is what lets an edited cell be matched back to its row and column.
+    cells: list[str] = Field(default_factory=list)
 
 
 class Submission(BaseModel):
@@ -102,6 +106,7 @@ class ProposedChange(BaseModel):
     notion_block_id: str
     notion_page_id: str = ""  # the page this change writes back to (multi-page packets)
     block_type: str = "paragraph"
+    cell_index: int | None = None  # table rows: which column this change rewrites
     job_id: str = ""  # the SuperDocs chat job that proposed this change (needed to approve it)
     operation: ChangeOperation
     old_html: str = ""

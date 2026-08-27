@@ -25,6 +25,7 @@ from notion_review.notion.models import (
     Page,
     QueueRow,
     RichText,
+    plain_text,
     split_rich_text,
 )
 
@@ -102,6 +103,16 @@ class LiveNotionClient:
         # Split any over-long run: Notion rejects a rich-text object past 2000 characters.
         runs = split_rich_text(rich_text)
         payload = {block_type: {"rich_text": [rich_to_json(rt) for rt in runs]}}
+        return block_from_json(
+            self._request("PATCH", f"/v1/blocks/{block_id}", json=payload).json()
+        )
+
+    def update_table_row(self, block_id: str, *, cells: list[str]) -> Block:
+        payload = {
+            "table_row": {
+                "cells": [[rich_to_json(rt) for rt in plain_text(text)] for text in cells]
+            }
+        }
         return block_from_json(
             self._request("PATCH", f"/v1/blocks/{block_id}", json=payload).json()
         )
