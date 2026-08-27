@@ -33,7 +33,7 @@ check: build ## The full gate: lint + format check + typecheck + tests + fronten
 	$(RUN) sh -c "ruff check . && ruff format --check . && mypy src && pytest"
 	$(MAKE) typecheck-web
 
-demo: build ## Build the sample report end to end on fakes — no key, no cost
+demo: build ## Build the sample report end to end (fakes by default; live if .env says so)
 	$(RUN) python -m inspection_report.cli demo
 
 verify: build ## Read the exported files back and prove the grouping

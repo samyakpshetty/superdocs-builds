@@ -185,6 +185,16 @@ class ApprovalDecision(BaseModel):
 
 
 class ApproveResult(BaseModel):
+    """What `approve` answers with.
+
+    ``applied_count`` and ``denied_count`` are **not returned by the live service** — its
+    response is `{"status", "message", "batch_complete"}` and nothing else — so on the live
+    path they are always the default 0, however many changes actually landed. The fake fills
+    them because it can. Do not read them as a count of work done; the only honest check is to
+    read the document back, which is what the export path does. Recorded here because the
+    zero was briefly mistaken for a service defect, and it is our own default.
+    """
+
     model_config = {"extra": "ignore"}
 
     status: str = ""
