@@ -462,13 +462,13 @@ class TestTheEvidenceCannotGoMissingQuietly:
 class TestTheRewritePassNeverSeesPhotographs:
     """The review runs on a photograph-free document, and the photographs go back for export.
 
-    Measured against the live service on 26 Aug 2026: the same report, the same instruction,
-    photographs the only variable. Without them, all eight paragraphs marked `finding-note`
-    were rewritten. With them, none were — the service proposed twenty edits, every one of
-    them to unmarked boilerplate, including the notice that says the report is not a
-    certification. The fake cannot show this, because it filters proposals to marked
-    paragraphs itself, which is exactly why these assertions are about the *document* rather
-    than about the fake's behaviour.
+    On the live service the review pass was unreliable on this report while the photographs
+    were in it — three runs, 0, 0 and 1 of the eight marked notes rewritten — and reliable
+    without them. A minimal synthetic document does not reproduce that consistently, so the
+    photographs are not established as the cause; what is established is that this shape of
+    document was unreliable and this change made it reliable. The fake cannot show any of it,
+    because it filters proposals to marked paragraphs itself, which is exactly why these
+    assertions are about the *document* rather than about the fake's behaviour.
     """
 
     def _prepared(self) -> tuple[FakeSuperDocsClient, object]:

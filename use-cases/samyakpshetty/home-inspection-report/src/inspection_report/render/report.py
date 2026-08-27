@@ -86,11 +86,20 @@ def render(inspection: Inspection, template_html: str, *, include_photos: bool =
 
     ``include_photos=False`` renders the same report with the photograph blocks left out.
     That is not a display option: the rewrite pass is prepared against the photograph-free
-    render because the service behaves differently when images are present. Measured on the
-    live service, same document, same instruction, photographs the only variable: without
-    them all eight marked paragraphs were rewritten; with them none were, and the model
-    edited unmarked boilerplate instead, the "not a certification" notice among it. The
-    photographs go back in for the export, which is what `finalise_document` is for.
+    render because that is what made the pass reliable.
+
+    Measured on the live service, 27 Aug 2026. On this report — the real,
+    template-derived one, eight marked notes — the review pass with photographs present
+    failed three runs out of three (0, 0 and 1 of 8 notes rewritten, the rest of the
+    proposals landing on unmarked boilerplate, the "not a certification" notice among it),
+    while the same report without them rewrote all eight. What I could *not* do is isolate
+    the cause: a minimal synthetic document with the same eight marked notes and the same
+    eight images reproduces the failure only about one run in four. So photographs are not
+    established as the trigger — the honest claim is that targeting is unreliable on a
+    document of this shape, and that taking the photographs out of the review pass made it
+    reliable here.
+
+    The photographs go back in for the export, which is what `finalise_document` is for.
     """
     systems = list(catalogue.systems())
     fmt = binding.read_format(template_html, [s.name for s in systems])

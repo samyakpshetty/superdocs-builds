@@ -153,9 +153,9 @@ def prepare(
     uploaded, reused = upload_photos(inspection, photo_data, client, known=known_uploads)
 
     # The photographs are uploaded first, because the export needs them — but the document
-    # the rewrite pass sees is rendered without them. See `render_report.render`: images in
-    # the document make the service skip the very paragraphs it is asked to rewrite.
-    # `finalise_document` puts them back before the export.
+    # the rewrite pass sees is rendered without them, because that is what made the pass
+    # reliable here. See `render_report.render` for the measurements, including the part I
+    # could not isolate. `finalise_document` puts them back before the export.
     html = render_report.render(inspection, template_html, include_photos=False)
     upload = client.upload_document(document_html=html, session_id=session_id)
     inspection.stage = ReportStage.PREPARED
