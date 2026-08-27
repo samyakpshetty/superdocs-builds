@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class JobStatus(StrEnum):
@@ -129,6 +129,22 @@ class Usage(BaseModel):
     """
 
     model_config = {"extra": "ignore"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _nulls_are_absent(cls, data: Any) -> Any:
+        """Treat an explicit ``null`` as "not sent", so the field default stands.
+
+        The service sends `null` for fields it has no value for — seen live on 27 Aug 2026,
+        `bucket_used: null` on a job that had just succeeded, which failed the whole parse and
+        surfaced in the interface as a pydantic ValidationError where a report should have
+        been. Defaulting a missing key while rejecting a null one is a distinction the sender
+        does not make, so we should not either. Dropped here rather than widening each field
+        to `| None`, which would push the null into arithmetic downstream.
+        """
+        if isinstance(data, dict):
+            return {key: value for key, value in data.items() if value is not None}
+        return data
 
     ops_charged: int = 0
     was_billable: bool = False

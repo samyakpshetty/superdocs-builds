@@ -407,3 +407,35 @@ class TestTheFakeIsSharedTheWayAServerIs:
 
         with pytest.raises(SuperDocsError):
             FakeSuperDocsClient(state_dir=None).get_job(job_id)
+
+
+def test_usage_survives_a_null_field_from_the_service() -> None:
+    """An explicit `null` must be treated as "not sent", not as a parse failure.
+
+    Seen live on 27 Aug 2026: a job that had just succeeded came back with
+    `bucket_used: null`, which failed the whole `Usage` parse and surfaced in the interface as
+    a pydantic ValidationError where the report should have been. Every field is checked here,
+    not just the one that broke, because the sender draws no distinction between a key it
+    omits and a key it sends as null.
+    """
+    from inspection_report.superdocs.models import Usage
+
+    usage = Usage.model_validate(
+        {
+            "ops_charged": None,
+            "was_billable": None,
+            "quota_exhausted": None,
+            "bucket_used": None,
+            "monthly_used": None,
+            "monthly_limit": None,
+            "monthly_remaining": None,
+            "promotions": None,
+        }
+    )
+    assert usage.bucket_used == ""
+    assert usage.ops_charged == 0
+    assert usage.promotions == []
+
+    # A real payload still parses exactly as before.
+    real = Usage.model_validate({"ops_charged": 1, "bucket_used": "promo", "monthly_used": 7})
+    assert real.ops_charged == 1 and real.bucket_used == "promo" and real.monthly_used == 7
